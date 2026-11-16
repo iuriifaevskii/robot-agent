@@ -20,22 +20,6 @@ Configure OPENAI_API_KEY and OPENAI_MODEL through environment variables.
 
 Keep secrets in .env; provide .env.example with placeholders.
 
-## Implementation order
-
-Implement only the task requested in the current message:
-
-1. Project environment and minimal entry point.
-2. One agent request and printed response.
-3. Interactive terminal chat with /exit.
-4. In-memory conversation history.
-5. One simple tool: current date and time.
-6. SQLite history persistence and restore after restart.
-7. Session commands: /new, /sessions, /resume.
-8. Persistent memory tools: save, search, update, delete.
-9. Conversation summaries to limit context size.
-
-Do not implement later steps ahead of time.
-
 ## Architecture
 
 Start with a small structure; add modules when needed.
@@ -69,6 +53,8 @@ Prefer simple functions and minimal dependencies.
 Read relevant existing files before making changes.
 
 Make the smallest complete change for the current task.
+
+Implement only the task in the current message or issue. Do not build a later capability because it is listed in ROADMAP.md.
 
 Reuse existing code and avoid unrelated refactoring.
 
@@ -133,7 +119,7 @@ Use git for local version control and GitHub CLI (gh) for issues and PRs.
 - Create a branch from the appropriate up-to-date base:
   feat/<issue-number>-<short-name> or fix/<issue-number>-<short-name>.
 - Reuse the current branch if it already belongs to this issue.
-- Implement only the requested issue and respect the MVP implementation order.
+- Implement only the requested issue.
 - When creating an issue for a behavior change, add a Test scenarios section.
   Each scenario states the situation and the expected result.
 - Skip test scenarios for documentation, workflow text, and other changes
