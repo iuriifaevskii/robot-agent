@@ -3,7 +3,7 @@ import sys
 
 from dotenv import load_dotenv
 
-REQUIRED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL")
+REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
 
 
 def main() -> None:
