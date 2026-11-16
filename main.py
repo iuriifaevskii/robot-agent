@@ -12,7 +12,8 @@ def main() -> None:
     if missing:
         joined = ", ".join(missing)
         print(
-            f"Missing configuration: {joined}. Copy .env.example to .env and set the values.",
+            f"Missing configuration: {joined}. "
+            "Copy .env.example to .env and set the values.",
             file=sys.stderr,
         )
         raise SystemExit(1)
