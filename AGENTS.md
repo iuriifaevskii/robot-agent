@@ -1,8 +1,12 @@
 # Project
 
-Build a small personal AI agent running locally on a computer.
-The user types messages in the terminal and receives text responses.
-Later, the application may run on Raspberry Pi 5.
+Build the personal AI agent first, running locally on a computer with terminal input/output.
+Start with one fixed local user profile and a stable user_id.
+Then develop it into an interactive robot head on Raspberry Pi 5, calling OpenAI API.
+
+ROADMAP.md defines the implementation order and planned features.
+ARCHITECTURE.md defines identity, session, memory and hardware boundaries.
+These documents describe intent, not implemented functionality or permission to build ahead.
 
 ## Stack
 
@@ -26,7 +30,14 @@ Start with a small structure; add modules when needed.
 
 Separate terminal input/output from agent logic.
 
+Resolve the current user at the application boundary; initially return one fixed profile.
+Pass user_id explicitly to sessions and memory operations. Do not scatter a fixed ID through the code.
+Later, manual selection and face recognition must resolve to the same stable user IDs.
+Never let the model choose the user_id used for data access.
+
 Keep database access separate when persistence is introduced.
+Scope session listing, resume and memory reads/writes to the current user from the first implementation.
+Do not use a display name, session ID or camera tracking ID as a user ID.
 
 Use PydanticAI's supported message serialization.
 
@@ -35,14 +46,21 @@ Preserve tool calls and their results in conversation history.
 Distinguish session history from long-term user memories.
 
 Initially save long-term memories only when explicitly requested.
+Summaries are conversation context, not automatically confirmed user facts.
+Keep context bounded and account for summary calls in API budgets when those features are introduced.
 
 Keep configuration and hardware-independent logic portable to Raspberry Pi.
+Route supported simple commands locally; keep hardware control outside model-generated text.
+Introduce modules only with the feature that needs them; do not create empty future adapters or tables.
 
 ## Scope
 
-MVP has one local user.
+The first milestone is a usable text agent with one fixed user, sessions, SQLite memory and bounded context.
+Design ownership for multiple users from the start, but defer user switching and recognition to their roadmap stages.
 
-Voice, camera, Hailo, motors and Arduino are future work.
+Voice, camera, Hailo, screen expressions and Arduino-controlled head movement follow the agent milestone.
+The later robot-head MVP supports registered users, one active conversation, local commands and basic object recognition.
+Wheels, navigation and simultaneous multi-person conversations are beyond the robot-head MVP.
 
 Add web UI, servers, Docker, MCP, vector databases or extra agents only when requested.
 
