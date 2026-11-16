@@ -3,6 +3,8 @@ import sys
 
 from dotenv import load_dotenv
 
+from agent import AgentRequestError, request_reply
+
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
 
 
@@ -17,7 +19,14 @@ def main() -> None:
             file=sys.stderr,
         )
         raise SystemExit(1)
-    print("Configuration loaded.")
+
+    model_name = os.environ["OPENAI_MODEL"]
+    try:
+        reply = request_reply(model_name)
+    except AgentRequestError as exc:
+        print(f"Agent request failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(reply)
 
 
 if __name__ == "__main__":
