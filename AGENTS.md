@@ -99,10 +99,28 @@ Do not repeat the architecture or unchanged files.
 Finish with: changes made, command to run, verification result.
 
 Ask questions only when a missing decision blocks the current task.
+The one-time issue question in the GitHub workflow is the exception.
 
 ## GitHub workflow
 
 Use git for local version control and GitHub CLI (gh) for issues and PRs.
+
+### New work in chat
+
+- When a message starts a new task and no issue is already in play, ask once,
+  before editing files, whether to create a GitHub issue.
+- Ask in one question: create an issue for this task, or continue without one.
+- A new task is a feature, fix, or other change worth keeping. A question,
+  a clarification, a continuation of the current issue, or a request to
+  commit, push, or merge is not a new task.
+- If the user agrees, create the issue, then follow Starting a task.
+  If they decline, continue and do not ask again for that task.
+- One issue records one outcome. The title names the change.
+  The PR that finishes the work links the issue.
+- Keep visibility in the issue and the PR. Do not add a chat log,
+  dashboard, or second tracker.
+- Do not add a hook that asks on every message. Whether a message is a
+  new task is a judgment, and this section is the source of truth.
 
 ### Starting a task
 
