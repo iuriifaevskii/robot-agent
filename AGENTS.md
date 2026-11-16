@@ -116,12 +116,23 @@ Use git for local version control and GitHub CLI (gh) for issues and PRs.
   feat/<issue-number>-<short-name> or fix/<issue-number>-<short-name>.
 - Reuse the current branch if it already belongs to this issue.
 - Implement only the requested issue and respect the MVP implementation order.
+- When creating an issue for a behavior change, add a Test scenarios section.
+  Each scenario states the situation and the expected result.
+- Skip test scenarios for documentation, workflow text, and other changes
+  with no observable behavior.
+- Implement the scenarios from the issue as tests. Do not add tests that
+  do not protect a listed scenario.
 - Ask only when missing or conflicting requirements block implementation.
 
 ### Verification
 
 - Review the diff and run checks relevant to the change.
-- Use existing project checks; do not introduce tooling unnecessarily.
+- Use the project checks: `ruff check .`, `ruff format --check .`, and `pytest`.
+  Install `requirements.txt` and `requirements-dev.txt` into the project venv first.
+- Tests must not read `.env` or call the OpenAI API.
+- The code-quality instructions live in `.cursor/skills/python-quality`.
+  Do not add a separate workflow skill; this GitHub workflow section is the source of truth.
+- Do not introduce extra tooling unless a task asks for it.
 - Do not make paid live API calls unless explicitly requested.
 - Report failed or unavailable checks honestly.
 - Never include secrets, .env, .venv, caches or local databases in commits.
