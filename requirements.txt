@@ -1,2 +1,2 @@
-pydantic-ai-slim[anthropic]
+pydantic-ai-slim[openai]
 python-dotenv

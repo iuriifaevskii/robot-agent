@@ -8,15 +8,15 @@ Later, the application may run on Raspberry Pi 5.
 
 Python 3.12, venv, pip.
 
-PydanticAI with pydantic-ai-slim[anthropic].
+PydanticAI with pydantic-ai-slim[openai].
 
-Claude Haiku through Anthropic API.
+OpenAI model through OpenAI API.
 
 python-dotenv for local configuration.
 
 SQLite through Python's built-in sqlite3 when persistence is added.
 
-Configure ANTHROPIC_API_KEY and ANTHROPIC_MODEL through environment variables.
+Configure OPENAI_API_KEY and OPENAI_MODEL through environment variables.
 
 Keep secrets in .env; provide .env.example with placeholders.
 
