@@ -1,6 +1,6 @@
 """Send one prompt to the OpenAI model.
 
-Terminal input and output stay in main.py.
+Terminal input and output stay in cli.py.
 """
 
 from pydantic_ai import Agent, AgentRunError, UserError
@@ -32,7 +32,7 @@ def request_reply(model_name: str, user_id: str) -> str:
     try:
         return run_model(model_name, PROMPT, user_id)
     except (AgentRunError, UserError) as exc:
-        # One line for the terminal. main.py prints it and exits.
+        # One line for the terminal. cli.py prints it and exits.
         raise AgentRequestError(_failure_message(exc)) from exc
 
 

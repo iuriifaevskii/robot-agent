@@ -1,8 +1,9 @@
+import runpy
+
 import pytest
 from pydantic_ai import AgentRunError
 
-import agent
-import main
+from robot_agent import agent, cli
 
 MISSING_BOTH = (
     "Missing configuration: OPENAI_API_KEY, OPENAI_MODEL. "
@@ -19,7 +20,7 @@ MISSING_MODEL = (
 
 
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
@@ -51,7 +52,7 @@ def test_prints_model_reply(
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     calls = _replace_model(monkeypatch, reply="model reply")
 
-    main.main()
+    cli.main()
 
     assert calls == [("test-model", agent.PROMPT, "local-user")]
     assert capsys.readouterr().out == "model reply\n"
@@ -66,7 +67,7 @@ def test_missing_only_api_key(
     calls = _replace_model(monkeypatch, reply="model reply")
 
     with pytest.raises(SystemExit) as exc:
-        main.main()
+        cli.main()
 
     assert exc.value.code == 1
     assert capsys.readouterr().err == MISSING_KEY
@@ -82,7 +83,7 @@ def test_missing_only_model(
     calls = _replace_model(monkeypatch, reply="model reply")
 
     with pytest.raises(SystemExit) as exc:
-        main.main()
+        cli.main()
 
     assert exc.value.code == 1
     assert capsys.readouterr().err == MISSING_MODEL
@@ -97,7 +98,22 @@ def test_missing_configuration(
     calls = _replace_model(monkeypatch, reply="model reply")
 
     with pytest.raises(SystemExit) as exc:
-        main.main()
+        cli.main()
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == MISSING_BOTH
+    assert calls == []
+
+
+def test_package_entry_point_reports_missing_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _isolate_env(monkeypatch)
+    calls = _replace_model(monkeypatch, reply="model reply")
+
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("robot_agent", run_name="__main__")
 
     assert exc.value.code == 1
     assert capsys.readouterr().err == MISSING_BOTH
@@ -114,7 +130,7 @@ def test_model_call_failure(
     calls = _replace_model(monkeypatch, error=AgentRunError("connection failed"))
 
     with pytest.raises(SystemExit) as exc:
-        main.main()
+        cli.main()
 
     assert exc.value.code == 1
     captured = capsys.readouterr()
