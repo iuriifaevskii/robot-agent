@@ -10,6 +10,9 @@ Keep terminal I/O separate from agent logic. Add identity resolution when introd
 the fixed profile; add session, storage and memory functions with their roadmap steps.
 Prefer small modules and functions over a framework, plugin system or extra agents.
 Do not create empty hardware adapters, unused classes or speculative database tables.
+Keep paid services and dependencies to the existing stack. Handle deterministic work
+locally; add a cloud call only for a user-visible capability that needs it, and measure
+its API use before enabling speech or vision.
 
 | Responsibility | First implementation | Later evolution |
 | --- | --- | --- |
@@ -120,21 +123,34 @@ number of recent complete turns and relevant memories belonging to the current u
 Keep complete tool exchanges together when trimming history. Do not send the entire
 database, every past session or continuous camera footage.
 
+For the first text-agent milestone, bound model input before each paid request: keep a
+configurable number of recent complete turns, reject an oversized current prompt before
+sending it when the provider supports pre-request token counting, and set a provider-side
+maximum output-token setting. Do not invoke a model to summarize history just to enforce
+a basic limit. Keep the selected model configurable; do not hardcode a premium model.
+
+PydanticAI token and cost limits use reported model usage and may be checked after a
+response has already been billed. Treat a `cost_limit` as a best-effort guard, not a hard
+billing ceiling. Pair per-call limits with request/tool-call limits. A cumulative
+session/day budget needs persisted counters and belongs with SQLite usage tracking.
+
 Summarize when a configured context threshold is approached, and at meaningful session
 completion if new content remains. Do not summarize every turn or run an idle LLM loop.
 If summarization fails or the budget is exhausted, keep history and use a bounded
 fallback context or explain that the conversation cannot continue within the limit.
 
-Limit input context, output size, tool rounds, session usage and device-wide daily
-usage. Track summary calls and any cloud speech/vision calls too. Persist counters
-across restarts; preflight requests conservatively and reconcile with returned usage.
-Exact thresholds, model choices and rates belong to their implementation issues.
+Track session and device-wide daily usage, including summaries and any cloud speech or
+vision calls. Persist counters across restarts; preflight requests conservatively and
+reconcile with returned usage. Exact thresholds, model choices and rates belong to
+their implementation issues.
 
 ## Local actions and hardware
 
-Known deterministic commands go through a local dispatcher. General conversation
-uses OpenAI. Natural-language tool calls may request only explicitly allowed actions,
-with arguments validated by the application; never execute arbitrary model text.
+Known deterministic commands go through a local dispatcher before a model request.
+This avoids an API call for answers or actions the application can handle locally.
+General conversation uses OpenAI. Natural-language tool calls may request only
+explicitly allowed actions, with arguments validated by the application; never execute
+arbitrary model text.
 
 Pi owns the application, camera/audio/display orchestration and SQLite. Arduino owns
 servo execution with calibrated bounds, speed limits, acknowledgements and defined
@@ -144,6 +160,24 @@ Movement must not depend on a successful cloud response.
 Display and motion controllers react to application states without extra model calls.
 "Processing" means waiting for work to finish, not displaying hidden model reasoning.
 Use local eyes/blinking/idle animations and a small set of allowed expressions.
+
+## Security and privacy
+
+- Treat terminal text, future speech transcripts and camera/model observations as
+  untrusted input. They cannot change system rules, grant tool permissions or select
+  a user's data. Prompt text is never authorization.
+- Keep the OpenAI key in local environment configuration. Never place it in prompts,
+  logs, SQLite content, commits or model-visible tool results. Log only the minimum
+  operational details needed to diagnose failures; do not log raw audio, video or
+  transcripts by default.
+- Keep raw audio, video and face references local by default. Send only the data needed
+  for an explicitly selected cloud feature; do not upload continuous audio/video or
+  retain raw media unless a feature specifically requires it and defines deletion.
+- Model output must never go directly to a shell, arbitrary network call or actuator.
+  Tools and local actions use an allowlist, validated arguments and trusted application
+  context. Arduino enforces movement bounds and safe link-loss behavior independently.
+- Before persisting transcripts, face data or other personal data, define who can read
+  it, how long it is kept, and how it can be deleted.
 
 ## Recognition and conversation lifecycle
 
@@ -170,7 +204,8 @@ after hardware validation; do not assume every model runs on the Hailo accelerat
 ## Verification as features are implemented
 
 Future behavior issues should cover user isolation, stable identity after restart,
-session ownership, complete tool histories, summary coverage/failure, budget exhaustion
-and local commands without OpenAI. Hardware issues add explicit device scenarios.
+session ownership, complete tool histories, summary coverage/failure, input/output
+limits, budget exhaustion, untrusted inputs, data deletion and local commands without
+OpenAI. Hardware issues add explicit device scenarios.
 Use fake API/model and hardware boundaries in automated tests; live API calls remain
 opt-in. This documentation change itself introduces no runtime behavior.
