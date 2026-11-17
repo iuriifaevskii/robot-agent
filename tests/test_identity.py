@@ -1,4 +1,4 @@
-import identity
+from robot_agent import identity
 
 
 def test_resolve_user_returns_fixed_profile() -> None:

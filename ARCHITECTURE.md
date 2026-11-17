@@ -25,6 +25,41 @@ Do not create empty hardware adapters, unused classes or speculative database ta
 Hardware events and terminal commands should feed the same conversation operations.
 The agent and database must not depend on camera frames or Arduino connections.
 
+## Code layout
+
+Application code lives in one import package at the repository root; run it with
+`python -m robot_agent`. A flat layout keeps a small CLI simple and needs no install
+step. Reconsider a `src/` layout if the package grows past roughly ten modules or
+is installed as a distribution on the Pi.
+
+```text
+robot_agent/
+  __main__.py   entry point, calls cli.main()
+  cli.py        terminal input/output and configuration checks
+  agent.py      PydanticAI agent and model calls
+  identity.py   resolves the current user profile
+tests/          one test module per application module
+```
+
+Planned modules, created only with the roadmap step that needs them:
+
+| Module | Responsibility | Roadmap step |
+| --- | --- | --- |
+| `chat.py` | Conversation turns for the current user and session | Terminal chat, history |
+| `tools.py` | Allowed agent tools bound to trusted context | Date/time tool |
+| `storage.py` | The only module that runs SQL | SQLite persistence |
+| `sessions.py` | Create, list and resume sessions for a `user_id` | Session commands |
+| `memory.py` | Explicit user memories | Persistent memory |
+| `context.py` | Summary, recent turns and memories within limits | Bounded context |
+| `usage.py` | API usage counters and limits | Usage limits |
+| `commands.py` | Local command dispatcher | Local routing |
+| `config.py` | Typed settings loaded from the environment | When `cli.py` outgrows inline checks |
+
+Dependency direction: `cli` (and later voice/screen adapters) calls conversation
+operations; those call `agent`, `memory`, `sessions` and `storage`. Lower modules never
+import `cli` or print. Only `cli` reads the environment and talks to the terminal.
+Split a module into a subpackage only when it no longer fits one clear responsibility.
+
 ## Identity and ownership
 
 - `user_id` is a stable internal identifier, independent of the person's name,

@@ -34,6 +34,20 @@ Run all three after a Python change. Fix failures before finishing. Report the c
 - Use fake values such as `test-key` and `test-model`. Never print or assert a real API key.
 - Cover the missing-configuration and success paths when changing configuration handling.
 
+## Code smells
+
+Ruff checks complexity (`C90`) and too many arguments, branches, returns or statements (`PLR09`).
+Do not silence these with `noqa`; split the function instead. Also review the diff for:
+
+- A module that mixes terminal I/O, model calls and storage. Keep the layout in `ARCHITECTURE.md`.
+- `print`, `input` or `os.environ` outside `cli.py`.
+- A hardcoded `user_id` outside `identity.py`, or a `user_id` taken from model output.
+- `except Exception` or bare `except` that hides failures; catch the specific library errors.
+- Duplicated logic or magic strings repeated across modules; name a constant once.
+- Mutable default arguments and module-level state that tests must reset.
+- Dead code, commented-out code, unused parameters without a stated purpose, and empty future modules.
+- Tests that assert implementation details instead of an issue scenario.
+
 ## Scope
 
 Do not add mypy, pre-commit, or coverage thresholds unless the user asks.

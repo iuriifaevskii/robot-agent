@@ -3,8 +3,8 @@ import sys
 
 from dotenv import load_dotenv
 
-from agent import AgentRequestError, request_reply
-from identity import resolve_user
+from robot_agent.agent import AgentRequestError, request_reply
+from robot_agent.identity import resolve_user
 
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
 
@@ -29,7 +29,3 @@ def main() -> None:
         print(f"Agent request failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     print(reply)
-
-
-if __name__ == "__main__":
-    main()
