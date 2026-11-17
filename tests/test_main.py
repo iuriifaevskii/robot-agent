@@ -29,11 +29,11 @@ def _replace_model(
     *,
     reply: str = "",
     error: Exception | None = None,
-) -> list[tuple[str, str]]:
-    calls: list[tuple[str, str]] = []
+) -> list[tuple[str, str, str]]:
+    calls: list[tuple[str, str, str]] = []
 
-    def fake_run_model(model_name: str, prompt: str) -> str:
-        calls.append((model_name, prompt))
+    def fake_run_model(model_name: str, prompt: str, user_id: str) -> str:
+        calls.append((model_name, prompt, user_id))
         if error is not None:
             raise error
         return reply
@@ -53,7 +53,7 @@ def test_prints_model_reply(
 
     main.main()
 
-    assert calls == [("test-model", agent.PROMPT)]
+    assert calls == [("test-model", agent.PROMPT, "local-user")]
     assert capsys.readouterr().out == "model reply\n"
 
 
@@ -120,4 +120,4 @@ def test_model_call_failure(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "Agent request failed: connection failed\n"
-    assert calls == [("test-model", agent.PROMPT)]
+    assert calls == [("test-model", agent.PROMPT, "local-user")]

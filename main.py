@@ -4,6 +4,7 @@ import sys
 from dotenv import load_dotenv
 
 from agent import AgentRequestError, request_reply
+from identity import resolve_user
 
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
 
@@ -21,8 +22,9 @@ def main() -> None:
         raise SystemExit(1)
 
     model_name = os.environ["OPENAI_MODEL"]
+    profile = resolve_user()
     try:
-        reply = request_reply(model_name)
+        reply = request_reply(model_name, profile.user_id)
     except AgentRequestError as exc:
         print(f"Agent request failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

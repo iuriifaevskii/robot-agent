@@ -13,10 +13,11 @@ class AgentRequestError(Exception):
     """The model request failed. The message is safe to print."""
 
 
-def run_model(model_name: str, prompt: str) -> str:
-    """Call the OpenAI model.
+def run_model(model_name: str, prompt: str, user_id: str) -> str:
+    """Call the OpenAI model for the resolved user.
 
     Tests replace this function so checks never call the OpenAI API.
+    user_id is the application user. It is not part of the prompt.
     """
     # The openai: provider reads OPENAI_API_KEY from the environment.
     model_agent = Agent(f"openai:{model_name}")
@@ -26,10 +27,10 @@ def run_model(model_name: str, prompt: str) -> str:
     return result.output
 
 
-def request_reply(model_name: str) -> str:
+def request_reply(model_name: str, user_id: str) -> str:
     """Return the model's text reply for the fixed prompt."""
     try:
-        return run_model(model_name, PROMPT)
+        return run_model(model_name, PROMPT, user_id)
     except (AgentRunError, UserError) as exc:
         # One line for the terminal. main.py prints it and exits.
         raise AgentRequestError(_failure_message(exc)) from exc
