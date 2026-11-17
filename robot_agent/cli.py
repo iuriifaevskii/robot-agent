@@ -2,6 +2,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
+from pydantic_ai.messages import ModelMessage
 
 from robot_agent.agent import AgentRequestError, request_reply
 from robot_agent.identity import resolve_user
@@ -28,12 +29,17 @@ def main() -> None:
 
 
 def run_chat(model_name: str, user_id: str) -> None:
-    """Read lines until /exit or end of input. Each line is one request."""
+    """Read lines until /exit or end of input.
+
+    Successful turns stay in memory until this invocation returns.
+    """
+    history: list[ModelMessage] = []
     while True:
         line = _read_line()
         if line is None:
             return
-        if _turn(model_name, user_id, line):
+        history, finished = _turn(model_name, user_id, line, history)
+        if finished:
             return
 
 
@@ -44,20 +50,31 @@ def _read_line() -> str | None:
         return None
 
 
-def _turn(model_name: str, user_id: str, line: str) -> bool:
-    """Handle one line. Return True when the chat should stop."""
+def _turn(
+    model_name: str,
+    user_id: str,
+    line: str,
+    history: list[ModelMessage],
+) -> tuple[list[ModelMessage], bool]:
+    """Handle one line. Return history and whether the chat should stop."""
     text = line.strip()
     if not text:
-        return False
+        return history, False
     if text == EXIT_COMMAND:
-        return True
-    print(_reply(model_name, user_id, text))
-    return False
+        return history, True
+    reply, history = _reply(model_name, user_id, text, history)
+    print(reply)
+    return history, False
 
 
-def _reply(model_name: str, user_id: str, prompt: str) -> str:
+def _reply(
+    model_name: str,
+    user_id: str,
+    prompt: str,
+    history: list[ModelMessage],
+) -> tuple[str, list[ModelMessage]]:
     try:
-        return request_reply(model_name, user_id, prompt)
+        return request_reply(model_name, user_id, prompt, history)
     except AgentRequestError as exc:
         print(f"Agent request failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
