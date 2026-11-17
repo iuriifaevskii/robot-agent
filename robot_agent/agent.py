@@ -5,9 +5,6 @@ Terminal input and output stay in cli.py.
 
 from pydantic_ai import Agent, AgentRunError, UserError
 
-# Fixed prompt until the terminal chat loop exists.
-PROMPT = "Reply with exactly: pong"
-
 
 class AgentRequestError(Exception):
     """The model request failed. The message is safe to print."""
@@ -27,10 +24,10 @@ def run_model(model_name: str, prompt: str, user_id: str) -> str:
     return result.output
 
 
-def request_reply(model_name: str, user_id: str) -> str:
-    """Return the model's text reply for the fixed prompt."""
+def request_reply(model_name: str, user_id: str, prompt: str) -> str:
+    """Return the model's text reply for one user line."""
     try:
-        return run_model(model_name, PROMPT, user_id)
+        return run_model(model_name, prompt, user_id)
     except (AgentRunError, UserError) as exc:
         # One line for the terminal. cli.py prints it and exits.
         raise AgentRequestError(_failure_message(exc)) from exc
