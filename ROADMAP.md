@@ -33,27 +33,34 @@ step is a candidate for a separate future issue; split a step if necessary.
 4. Interactive terminal chat with `/exit` and clean handling of empty input.
 5. In-memory conversation history tied to the current user and session;
    preserve tool calls and results as well as text.
-6. One simple tool: current date and time.
-7. SQLite persistence for the default user, sessions and messages, with restoration
+6. Bound per-turn model use before adding more model-driven features: retain only a
+   configurable number of recent complete turns, reject oversized input before sending
+   it where supported, and set a provider-side output-token limit. Do not call a
+   summarizer just to enforce these limits.
+7. One simple PydanticAI tool: current date and time, to exercise model tool calling.
+   Keep exact deterministic shortcuts (such as a later `/time` command) local so they
+   do not need an OpenAI request.
+8. SQLite persistence for the default user, sessions and messages, with restoration
    after restart. Reuse the same user ID; never create a new identity on each run.
-8. Session commands: `/new`, `/sessions`, `/resume`. Scope listing and resume to
+9. Session commands: `/new`, `/sessions`, `/resume`. Scope listing and resume to
    the current user. A new session starts a fresh conversation, not a new profile.
-9. Persistent user memory: save, search, update, delete and inspect remembered facts.
-   Initially store long-term facts only when explicitly requested.
-10. Conversation summaries and bounded context: summary + recent complete turns +
+10. Persistent user memory: save, search, update, delete and inspect remembered facts.
+    Initially store long-term facts only when explicitly requested.
+11. Conversation summaries and relevant context: summary + recent complete turns +
     relevant user memories. Summarize near a context threshold and at the end of
     a meaningful session; avoid repeatedly summarizing unchanged content.
-11. Usage limits: input context, response size, tool-call rounds, session API usage
-    and daily API usage. Include summaries in the budget; persist usage counters
-    so restarting or opening a new session does not reset the daily limit.
-12. Route supported simple commands locally, without asking the conversational
-    model to decide every time. Begin with time/date and session commands.
-13. Stabilize interrupted requests, failed summary generation and restart recovery.
+12. Persistent usage limits: session and daily request/token budgets, tool-call rounds,
+    and summary/speech/vision costs. Persist counters so restarting or opening a new
+    session does not reset the daily limit. Per-turn input/output limits are step 6.
+13. Route supported deterministic commands locally, without asking the model to
+    decide every time. Include date/time and session commands; reuse these operations
+    later from voice and hardware adapters.
+14. Stabilize interrupted requests, failed summary generation and restart recovery.
     Keep saved history if summarization fails; show clear errors without retry loops.
 
 **Done when:** a terminal conversation survives restart, sessions remain separate,
-explicit memories are available in later sessions for the same user, and long
-conversations stay within configured limits. No hardware is needed.
+explicit memories are available in later sessions for the same user, and each model
+request stays within configured input, output and usage limits. No hardware is needed.
 
 ## 2. Multiple user IDs without a camera
 
@@ -87,8 +94,16 @@ choices have been validated enough to begin integration.
   prefer local processing where quality and latency are acceptable.
 - Handle silence, unrecognized speech, audio failures and recording limits.
 - Start with turn-taking; prevent the robot from treating its own speech as user input.
-- Account for cloud speech costs if cloud recognition or synthesis is selected.
+- Send audio to a cloud service only when the selected speech feature needs it; avoid
+  continuous upload and account for the cost of each cloud speech path.
 - Keep terminal input available for development and recovery.
+- Treat text streaming as an optional latency improvement, not a prerequisite. First
+  measure time to first audible response. For a separate STT -> agent -> TTS pipeline,
+  stream text only if the chosen TTS accepts incremental input and it measurably starts
+  speech sooner; buffer chunks into natural phrases and keep the final response/history
+  complete. Text streaming to the terminal alone does not add voice or reduce token use.
+- A full speech-to-speech realtime API is a separate architecture and cost decision;
+  compare it with the turn-based pipeline before choosing it.
 
 **Done when:** one user can hold a spoken conversation without a keyboard after
 starting recording, with understandable feedback when audio processing fails.
