@@ -207,7 +207,7 @@ class _Playback:
 
 def _agent_type(playback: _Playback) -> type:
     class _Agent:
-        def __init__(self, model: str) -> None:
+        def __init__(self, model: str, **_kwargs: object) -> None:
             playback.bind_model(model)
 
         def run_sync(
