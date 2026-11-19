@@ -9,11 +9,23 @@ from pydantic_ai.messages import ModelMessage
 
 from robot_agent.agent import AgentRequestError, ModelLimits, request_reply
 from robot_agent.identity import UserProfile, resolve_user
+from robot_agent.sessions import (
+    create_session,
+    list_sessions,
+    open_session,
+    resume_session,
+)
 from robot_agent.storage import ConversationStore, StorageError, connect
 
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
 DEFAULT_DATABASE_PATH = "robot-agent.sqlite3"
 EXIT_COMMAND = "/exit"
+NEW_COMMAND = "/new"
+SESSIONS_COMMAND = "/sessions"
+RESUME_COMMAND = "/resume"
+NEW_USAGE = "Usage: /new"
+SESSIONS_USAGE = "Usage: /sessions"
+RESUME_USAGE = "Usage: /resume <session_id>"
 
 
 class _LimitSpec(NamedTuple):
@@ -35,6 +47,7 @@ class ActiveChat:
     """The current user's session and the turns loaded for this process."""
 
     user_id: str
+    display_name: str
     session_id: str
     history: list[ModelMessage]
     store: ConversationStore
@@ -56,8 +69,9 @@ def main() -> None:
 def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
     """Read lines until /exit or end of input.
 
-    Each successful turn is stored before its reply is printed.
-    At most limits.max_history_turns complete turns are sent next.
+    Session commands run locally. Each successful model turn is stored
+    before its reply is printed. At most limits.max_history_turns
+    complete turns are sent next.
     """
     while True:
         line = _read_line()
@@ -69,9 +83,15 @@ def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
 
 def _open_chat(profile: UserProfile, history_limit: int) -> ActiveChat:
     store = connect(_database_path())
-    session_id = store.ensure_session(profile.user_id, profile.display_name)
+    session_id = open_session(store, profile.user_id, profile.display_name)
     history = store.load_recent(profile.user_id, session_id, history_limit)
-    return ActiveChat(profile.user_id, session_id, history, store)
+    return ActiveChat(
+        profile.user_id,
+        profile.display_name,
+        session_id,
+        history,
+        store,
+    )
 
 
 def _require_env() -> None:
@@ -150,6 +170,8 @@ def _turn(
         return False
     if text == EXIT_COMMAND:
         return True
+    if _session_command(text, limits, chat):
+        return False
     reply, history, produced = _reply(
         model_name,
         chat.user_id,
@@ -161,6 +183,86 @@ def _turn(
     chat.history = history
     print(reply)
     return False
+
+
+def _session_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
+    """Run a local session command. Return whether the line was one.
+
+    Invalid arguments print usage and leave the current session active.
+    These commands do not call the model or record a turn.
+    """
+    name, args = _command_parts(text)
+    if name == NEW_COMMAND:
+        _new_session(args, chat)
+        return True
+    if name == SESSIONS_COMMAND:
+        _list_sessions(args, chat)
+        return True
+    if name == RESUME_COMMAND:
+        _resume_session(args, limits, chat)
+        return True
+    return False
+
+
+def _command_parts(text: str) -> tuple[str, list[str]]:
+    parts = text.split()
+    return parts[0], parts[1:]
+
+
+def _new_session(args: list[str], chat: ActiveChat) -> None:
+    if args:
+        print(NEW_USAGE, file=sys.stderr)
+        return
+    try:
+        session_id = create_session(chat.store, chat.user_id, chat.display_name)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    chat.session_id = session_id
+    chat.history = []
+    print(session_id)
+
+
+def _list_sessions(args: list[str], chat: ActiveChat) -> None:
+    if args:
+        print(SESSIONS_USAGE, file=sys.stderr)
+        return
+    try:
+        found = list_sessions(chat.store, chat.user_id)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    for record in found:
+        print(_session_line(record.session_id, record.created_at, chat))
+
+
+def _resume_session(
+    args: list[str],
+    limits: ModelLimits,
+    chat: ActiveChat,
+) -> None:
+    if len(args) != 1:
+        print(RESUME_USAGE, file=sys.stderr)
+        return
+    try:
+        history = resume_session(
+            chat.store,
+            chat.user_id,
+            args[0],
+            limits.max_history_turns,
+        )
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    chat.session_id = args[0]
+    chat.history = history
+    print(args[0])
+
+
+def _session_line(session_id: str, created_at: str, chat: ActiveChat) -> str:
+    if session_id == chat.session_id:
+        return f"{session_id} {created_at} active"
+    return f"{session_id} {created_at}"
 
 
 def _save_turn(chat: ActiveChat, messages: list[ModelMessage]) -> None:
