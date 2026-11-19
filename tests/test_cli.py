@@ -306,7 +306,13 @@ def _chat(path: Path) -> cli.ActiveChat:
     profile = identity.resolve_user()
     store = storage.connect(path)
     session_id = store.ensure_session(profile.user_id, profile.display_name)
-    return cli.ActiveChat(profile.user_id, session_id, [], store)
+    return cli.ActiveChat(
+        profile.user_id,
+        profile.display_name,
+        session_id,
+        [],
+        store,
+    )
 
 
 def _forbid_input(monkeypatch: pytest.MonkeyPatch) -> None:

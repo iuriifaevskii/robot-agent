@@ -1,4 +1,4 @@
-"""SQLite storage for one user's session and conversation turns.
+"""SQLite storage for users, sessions, and conversation turns.
 
 SQL stays in this module. It does not read the environment, print, or call
 the model.
@@ -16,6 +16,8 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 OPEN_FAILED = "Could not open the conversation database"
 READ_FAILED = "Could not read the saved conversation."
 SAVE_FAILED = "Could not save the new conversation turn."
+CREATE_FAILED = "Could not create a new session."
+SELECTION_FAILED = "Could not save the active session."
 NOT_OWNER = "The session does not belong to this user."
 
 _SCHEMA = """
@@ -38,6 +40,11 @@ CREATE TABLE IF NOT EXISTS messages (
     body TEXT NOT NULL,
     PRIMARY KEY (session_id, position)
 );
+
+CREATE TABLE IF NOT EXISTS active_sessions (
+    user_id TEXT PRIMARY KEY REFERENCES users (user_id),
+    session_id TEXT NOT NULL REFERENCES sessions (session_id)
+);
 """
 
 
@@ -52,38 +59,75 @@ class ConversationStore:
         self._connection = connection
 
     def ensure_session(self, user_id: str, display_name: str) -> str:
-        """Return this user's existing session, creating the user and session once."""
+        """Return this user's oldest session, creating the user and one session.
+
+        Oldest is the first creation time, then session id. This does not
+        change a saved active selection.
+        """
         try:
-            with self._connection:
-                self._connection.execute(
-                    """
-                    INSERT OR IGNORE INTO users (user_id, display_name)
-                    VALUES (?, ?)
-                    """,
-                    (user_id, display_name),
-                )
-                row = self._connection.execute(
-                    """
-                    SELECT session_id FROM sessions
-                    WHERE user_id = ?
-                    ORDER BY created_at, session_id
-                    LIMIT 1
-                    """,
-                    (user_id,),
-                ).fetchone()
-                if row is not None:
-                    return str(row["session_id"])
-                session_id = str(uuid4())
-                self._connection.execute(
-                    """
-                    INSERT INTO sessions (session_id, user_id, created_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (session_id, user_id, _timestamp()),
-                )
+            return self._oldest_session(user_id, display_name)
         except sqlite3.Error as exc:
             raise StorageError(f"{OPEN_FAILED}.") from exc
+
+    def active_session_id(self, user_id: str) -> str | None:
+        """Return the saved active session, or None when no selection exists."""
+        try:
+            row = self._connection.execute(
+                """
+                SELECT session_id FROM active_sessions
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(READ_FAILED) from exc
+        if row is None:
+            return None
+        return str(row["session_id"])
+
+    def create_session(self, user_id: str, display_name: str) -> str:
+        """Insert an empty session and select it in one transaction."""
+        session_id = str(uuid4())
+        try:
+            with self._connection:
+                self._ensure_user(user_id, display_name)
+                self._insert_session(session_id, user_id, _timestamp())
+                self._store_selection(user_id, session_id)
+        except sqlite3.Error as exc:
+            raise StorageError(CREATE_FAILED) from exc
         return session_id
+
+    def list_sessions(self, user_id: str) -> list[tuple[str, str]]:
+        """Return (session_id, created_at), newest creation time first.
+
+        Equal creation times are ordered by session id ascending.
+        Message bodies are not read.
+        """
+        try:
+            rows = self._connection.execute(
+                """
+                SELECT session_id, created_at
+                FROM sessions
+                WHERE user_id = ?
+                ORDER BY created_at DESC, session_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise StorageError(READ_FAILED) from exc
+        return [(str(row["session_id"]), str(row["created_at"])) for row in rows]
+
+    def select_session(self, user_id: str, session_id: str) -> None:
+        """Save session_id as this user's active session.
+
+        The session must already belong to user_id.
+        """
+        try:
+            with self._connection:
+                self._require_owner(user_id, session_id)
+                self._store_selection(user_id, session_id)
+        except sqlite3.Error as exc:
+            raise StorageError(SELECTION_FAILED) from exc
 
     def load_recent(
         self,
@@ -137,6 +181,52 @@ class ConversationStore:
                 )
         except sqlite3.Error as exc:
             raise StorageError(SAVE_FAILED) from exc
+
+    def _oldest_session(self, user_id: str, display_name: str) -> str:
+        with self._connection:
+            self._ensure_user(user_id, display_name)
+            row = self._connection.execute(
+                """
+                SELECT session_id FROM sessions
+                WHERE user_id = ?
+                ORDER BY created_at, session_id
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            if row is not None:
+                return str(row["session_id"])
+            session_id = str(uuid4())
+            self._insert_session(session_id, user_id, _timestamp())
+            return session_id
+
+    def _ensure_user(self, user_id: str, display_name: str) -> None:
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO users (user_id, display_name)
+            VALUES (?, ?)
+            """,
+            (user_id, display_name),
+        )
+
+    def _insert_session(self, session_id: str, user_id: str, created_at: str) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO sessions (session_id, user_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (session_id, user_id, created_at),
+        )
+
+    def _store_selection(self, user_id: str, session_id: str) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO active_sessions (user_id, session_id)
+            VALUES (?, ?)
+            ON CONFLICT (user_id) DO UPDATE SET session_id = excluded.session_id
+            """,
+            (user_id, session_id),
+        )
 
     def _require_owner(self, user_id: str, session_id: str) -> None:
         if self._owns(user_id, session_id):
