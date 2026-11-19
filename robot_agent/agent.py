@@ -1,6 +1,6 @@
-"""Send prompts to the OpenAI model with bounded in-memory history.
+"""Send prompts to the OpenAI model with bounded history.
 
-Terminal input and output stay in cli.py. History lives with the active chat.
+Terminal input and output stay in cli.py. Saved history stays in storage.py.
 """
 
 from collections.abc import Sequence
@@ -40,7 +40,7 @@ def run_model(
     user_id: str,
     message_history: Sequence[ModelMessage],
     limits: ModelLimits,
-) -> tuple[str, list[ModelMessage]]:
+) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
     """Call the OpenAI model for the resolved user.
 
     The current local date and time tool is available for the model to call.
@@ -48,8 +48,9 @@ def run_model(
     checks never call the OpenAI API or its token-counting endpoint. user_id
     is the application user. It is not part of the prompt or history.
     message_history is prior completed turns. The current prompt is sent
-    separately, once. The returned list keeps at most
+    separately, once. The second list keeps at most
     limits.max_history_turns complete turns after this successful run.
+    The third list is only the messages produced by this run.
     """
     outgoing = _recent_turns(message_history, limits.max_history_turns)
     # The openai: provider reads OPENAI_API_KEY from the environment.
@@ -69,8 +70,9 @@ def run_model(
     )
     if not isinstance(result.output, str):
         raise AgentRequestError("The model returned a non-text response.")
+    produced = list(result.new_messages())
     kept = _recent_turns(result.all_messages(), limits.max_history_turns)
-    return result.output, kept
+    return result.output, kept, produced
 
 
 def request_reply(
@@ -79,8 +81,8 @@ def request_reply(
     prompt: str,
     message_history: Sequence[ModelMessage],
     limits: ModelLimits,
-) -> tuple[str, list[ModelMessage]]:
-    """Return the model's text reply and the history after a successful run."""
+) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
+    """Return the reply, bounded history, and messages produced by this run."""
     try:
         return run_model(model_name, prompt, user_id, message_history, limits)
     except UsageLimitExceeded as exc:
