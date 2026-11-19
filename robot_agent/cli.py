@@ -1,14 +1,18 @@
 import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from typing import NamedTuple
 
 from dotenv import load_dotenv
 from pydantic_ai.messages import ModelMessage
 
 from robot_agent.agent import AgentRequestError, ModelLimits, request_reply
-from robot_agent.identity import resolve_user
+from robot_agent.identity import UserProfile, resolve_user
+from robot_agent.storage import ConversationStore, StorageError, connect
 
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
+DEFAULT_DATABASE_PATH = "robot-agent.sqlite3"
 EXIT_COMMAND = "/exit"
 
 
@@ -26,29 +30,48 @@ _LIMIT_SPECS = (
 )
 
 
+@dataclass
+class ActiveChat:
+    """The current user's session and the turns loaded for this process."""
+
+    user_id: str
+    session_id: str
+    history: list[ModelMessage]
+    store: ConversationStore
+
+
 def main() -> None:
     load_dotenv()
     _require_env()
     limits = _request_limits()
-    model_name = os.environ["OPENAI_MODEL"]
     profile = resolve_user()
-    run_chat(model_name, profile.user_id, limits)
+    try:
+        chat = _open_chat(profile, limits.max_history_turns)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    run_chat(os.environ["OPENAI_MODEL"], limits, chat)
 
 
-def run_chat(model_name: str, user_id: str, limits: ModelLimits) -> None:
+def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
     """Read lines until /exit or end of input.
 
-    Successful turns stay in memory until this invocation returns.
-    At most limits.max_history_turns complete turns are kept.
+    Each successful turn is stored before its reply is printed.
+    At most limits.max_history_turns complete turns are sent next.
     """
-    history: list[ModelMessage] = []
     while True:
         line = _read_line()
         if line is None:
             return
-        history, finished = _turn(model_name, user_id, line, history, limits)
-        if finished:
+        if _turn(model_name, line, limits, chat):
             return
+
+
+def _open_chat(profile: UserProfile, history_limit: int) -> ActiveChat:
+    store = connect(_database_path())
+    session_id = store.ensure_session(profile.user_id, profile.display_name)
+    history = store.load_recent(profile.user_id, session_id, history_limit)
+    return ActiveChat(profile.user_id, session_id, history, store)
 
 
 def _require_env() -> None:
@@ -98,6 +121,16 @@ def _invalid_limit(spec: _LimitSpec) -> None:
     raise SystemExit(1)
 
 
+def _database_path() -> Path:
+    raw = os.getenv("AGENT_DB_PATH", DEFAULT_DATABASE_PATH).strip()
+    if not raw:
+        raw = DEFAULT_DATABASE_PATH
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
+
+
 def _read_line() -> str | None:
     try:
         return input()
@@ -107,20 +140,35 @@ def _read_line() -> str | None:
 
 def _turn(
     model_name: str,
-    user_id: str,
     line: str,
-    history: list[ModelMessage],
     limits: ModelLimits,
-) -> tuple[list[ModelMessage], bool]:
-    """Handle one line. Return history and whether the chat should stop."""
+    chat: ActiveChat,
+) -> bool:
+    """Handle one line. Return whether the chat should stop."""
     text = line.strip()
     if not text:
-        return history, False
+        return False
     if text == EXIT_COMMAND:
-        return history, True
-    reply, history = _reply(model_name, user_id, text, history, limits)
+        return True
+    reply, history, produced = _reply(
+        model_name,
+        chat.user_id,
+        text,
+        chat.history,
+        limits,
+    )
+    _save_turn(chat, produced)
+    chat.history = history
     print(reply)
-    return history, False
+    return False
+
+
+def _save_turn(chat: ActiveChat, messages: list[ModelMessage]) -> None:
+    try:
+        chat.store.append_turn(chat.user_id, chat.session_id, messages)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 def _reply(
@@ -129,7 +177,7 @@ def _reply(
     prompt: str,
     history: list[ModelMessage],
     limits: ModelLimits,
-) -> tuple[str, list[ModelMessage]]:
+) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
     try:
         return request_reply(model_name, user_id, prompt, history, limits)
     except AgentRequestError as exc:

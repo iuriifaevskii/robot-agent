@@ -1,4 +1,6 @@
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from pydantic_ai import models
@@ -15,7 +17,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
-from robot_agent import agent, cli
+from robot_agent import agent, cli, identity, storage
 from robot_agent.tools import format_local_timestamp
 
 FIXED_MOMENT = datetime(2026, 11, 18, 9, 23, 15, tzinfo=timezone(timedelta(hours=2)))
@@ -37,7 +39,7 @@ def _limits(**overrides: int) -> agent.ModelLimits:
     )
 
 
-def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cli, "load_dotenv", lambda: None)
     for name in (
         "OPENAI_API_KEY",
@@ -45,11 +47,15 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AGENT_MAX_HISTORY_TURNS",
         "AGENT_MAX_REQUEST_INPUT_TOKENS",
         "AGENT_MAX_OUTPUT_TOKENS",
+        "AGENT_DB_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    database = Path(tempfile.mkdtemp(prefix="robot-agent-")) / "chat.sqlite3"
+    monkeypatch.setenv("AGENT_DB_PATH", str(database))
     monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", False)
+    return database
 
 
 class _LocalTestModel(TestModel):
@@ -66,7 +72,10 @@ class _LocalTestModel(TestModel):
 
 
 class _LocalFunctionModel(FunctionModel):
+    token_counts = 0
+
     async def count_tokens(self, messages, model_settings, model_request_parameters):
+        self.token_counts += 1
         return RequestUsage(input_tokens=1)
 
 
@@ -147,7 +156,7 @@ def test_time_question_runs_the_tool_and_keeps_the_exchange(
     )
     _use_model(monkeypatch, model)
 
-    reply, history = agent.request_reply(
+    reply, history, _produced = agent.request_reply(
         "test-model",
         "local-user",
         TIME_PROMPT,
@@ -220,7 +229,7 @@ def test_later_turn_receives_the_tool_exchange_within_the_history_limit(
     limits = _limits(max_history_turns=1)
     history: list[ModelMessage] = []
     for prompt in (TIME_PROMPT, "next", "after"):
-        _reply, history = agent.request_reply(
+        _reply, history, _produced = agent.request_reply(
             "test-model",
             "local-user",
             prompt,
@@ -324,6 +333,89 @@ def test_clock_failure_after_a_reply_exits_without_retry(
     captured = capsys.readouterr()
     assert captured.out == "earlier reply\n"
     assert captured.err == "Agent request failed: The local clock could not be read.\n"
+
+
+def test_restart_restores_the_time_tool_turn_without_running_it(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = _isolate_env(monkeypatch)
+    profile = identity.resolve_user()
+    clock_calls = _fix_clock(monkeypatch)
+    seen: list[list[ModelMessage]] = []
+
+    def respond(messages: list[ModelMessage], _info: object) -> ModelResponse:
+        seen.append(list(messages))
+        prompt = _latest_prompt(messages)
+        if prompt == TIME_PROMPT and not _has_tool_return(messages):
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="current_local_time",
+                        args={},
+                        tool_call_id="time-1",
+                    )
+                ]
+            )
+        text = "It is 09:23." if prompt == TIME_PROMPT else "later"
+        return ModelResponse(parts=[TextPart(content=text)])
+
+    model = _LocalFunctionModel(respond)
+    _use_model(monkeypatch, model)
+    _scripted_input(monkeypatch, [TIME_PROMPT])
+    cli.main()
+
+    assert clock_calls[0] == 1
+    assert len(seen) == 2
+    assert model.token_counts == 2
+    assert capsys.readouterr().out == "It is 09:23.\n"
+    _scripted_input(monkeypatch, ["and now?"])
+    cli.main()
+
+    assert clock_calls[0] == 1
+    assert len(seen) == 3
+    assert model.token_counts == 3
+    captured = capsys.readouterr()
+    assert captured.out == "later\n"
+    assert captured.err == ""
+    follow_up = _user_turns(seen)[-1]
+    assert _prompt_text(follow_up[-1].parts[0]) == "and now?"
+    prior = follow_up[:-1]
+    assert _part_types(prior) == [
+        UserPromptPart,
+        ToolCallPart,
+        ToolReturnPart,
+        TextPart,
+    ]
+    prompts = [
+        _prompt_text(part)
+        for message in prior
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert prompts == [TIME_PROMPT]
+    tool_calls = [part for part in _parts(prior) if isinstance(part, ToolCallPart)]
+    tool_returns = [part for part in _parts(prior) if isinstance(part, ToolReturnPart)]
+    assert len(tool_calls) == 1
+    assert len(tool_returns) == 1
+    assert tool_calls[0].tool_call_id == "time-1"
+    assert tool_returns[0].tool_call_id == "time-1"
+    assert tool_returns[0].content == FIXED_TIMESTAMP
+    saved = storage.connect(database)
+    session_id = saved.ensure_session(profile.user_id, profile.display_name)
+    restored = saved.load_recent(profile.user_id, session_id, 6)
+    restored_returns = [
+        part for part in _parts(restored) if isinstance(part, ToolReturnPart)
+    ]
+    assert len(restored_returns) == 1
+
+
+def _parts(messages: list[ModelMessage]) -> list[object]:
+    return [part for message in messages for part in message.parts]
+
+
+def _part_types(messages: list[ModelMessage]) -> list[type[object]]:
+    return [type(part) for part in _parts(messages)]
 
 
 def _latest_prompt(messages: list[ModelMessage]) -> str:
