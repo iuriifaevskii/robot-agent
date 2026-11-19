@@ -18,6 +18,8 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import ModelMessage
 
+from robot_agent.tools import ClockReadError, current_local_time
+
 
 class AgentRequestError(Exception):
     """The model request failed. The message is safe to print."""
@@ -41,17 +43,19 @@ def run_model(
 ) -> tuple[str, list[ModelMessage]]:
     """Call the OpenAI model for the resolved user.
 
-    Tests replace the agent so checks never call the OpenAI API or its
-    token-counting endpoint. user_id is the application user. It is not part
-    of the prompt or history. message_history is prior completed turns. The
-    current prompt is sent separately, once. The returned list keeps at most
+    The current local date and time tool is available for the model to call.
+    This function does not call that tool itself. Tests replace the agent so
+    checks never call the OpenAI API or its token-counting endpoint. user_id
+    is the application user. It is not part of the prompt or history.
+    message_history is prior completed turns. The current prompt is sent
+    separately, once. The returned list keeps at most
     limits.max_history_turns complete turns after this successful run.
     """
     outgoing = _recent_turns(message_history, limits.max_history_turns)
     # The openai: provider reads OPENAI_API_KEY from the environment.
     # count_tokens_before_request uses the OpenAI Responses input-token endpoint
     # and rejects an oversized request before generation.
-    model_agent = Agent(f"openai:{model_name}")
+    model_agent = Agent(f"openai:{model_name}", tools=[current_local_time])
     settings: ModelSettings = {"max_tokens": limits.max_output_tokens}
     usage_limits = UsageLimits(
         per_request_input_tokens_limit=limits.max_request_input_tokens,
@@ -81,6 +85,8 @@ def request_reply(
         return run_model(model_name, prompt, user_id, message_history, limits)
     except UsageLimitExceeded as exc:
         raise AgentRequestError(_input_limit_message(exc, limits)) from exc
+    except ClockReadError as exc:
+        raise AgentRequestError(_failure_message(exc)) from exc
     except (AgentRunError, UserError) as exc:
         # One line for the terminal. cli.py prints it and exits.
         raise AgentRequestError(_failure_message(exc)) from exc
