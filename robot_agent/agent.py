@@ -4,7 +4,7 @@ Terminal input and output stay in cli.py. Saved history stays in storage.py.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pydantic_ai import (
     Agent,
@@ -18,6 +18,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import ModelMessage
 
+from robot_agent.context import RecalledPrompt, reference_prompt
 from robot_agent.tools import ClockReadError, current_local_time
 
 
@@ -27,16 +28,17 @@ class AgentRequestError(Exception):
 
 @dataclass(frozen=True)
 class ModelLimits:
-    """Per-request history and token bounds supplied by the CLI."""
+    """Per-request history, recall, and token bounds supplied by the CLI."""
 
     max_history_turns: int
     max_request_input_tokens: int
     max_output_tokens: int
+    max_recalled_memories: int = 0
 
 
 def run_model(
     model_name: str,
-    prompt: str,
+    prompt: str | RecalledPrompt,
     user_id: str,
     message_history: Sequence[ModelMessage],
     limits: ModelLimits,
@@ -47,11 +49,13 @@ def run_model(
     This function does not call that tool itself. Tests replace the agent so
     checks never call the OpenAI API or its token-counting endpoint. user_id
     is the application user. It is not part of the prompt or history.
-    message_history is prior completed turns. The current prompt is sent
-    separately, once. The second list keeps at most
-    limits.max_history_turns complete turns after this successful run.
+    message_history is prior completed turns. The current question is sent
+    once. Recalled fact text is untrusted reference data for this request,
+    then removed from both returned message lists. The second list keeps at
+    most limits.max_history_turns complete turns after this successful run.
     The third list is only the messages produced by this run.
     """
+    question, sent = _outgoing_prompt(prompt)
     outgoing = _recent_turns(message_history, limits.max_history_turns)
     # The openai: provider reads OPENAI_API_KEY from the environment.
     # count_tokens_before_request uses the OpenAI Responses input-token endpoint
@@ -63,22 +67,25 @@ def run_model(
         count_tokens_before_request=True,
     )
     result = model_agent.run_sync(
-        prompt,
+        sent,
         message_history=list(outgoing),
         model_settings=settings,
         usage_limits=usage_limits,
     )
     if not isinstance(result.output, str):
         raise AgentRequestError("The model returned a non-text response.")
-    produced = list(result.new_messages())
-    kept = _recent_turns(result.all_messages(), limits.max_history_turns)
+    produced = _drop_reference(list(result.new_messages()), sent, question)
+    kept = _recent_turns(
+        _drop_reference(list(result.all_messages()), sent, question),
+        limits.max_history_turns,
+    )
     return result.output, kept, produced
 
 
 def request_reply(
     model_name: str,
     user_id: str,
-    prompt: str,
+    prompt: str | RecalledPrompt,
     message_history: Sequence[ModelMessage],
     limits: ModelLimits,
 ) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
@@ -92,6 +99,57 @@ def request_reply(
     except (AgentRunError, UserError) as exc:
         # One line for the terminal. cli.py prints it and exits.
         raise AgentRequestError(_failure_message(exc)) from exc
+
+
+def _outgoing_prompt(prompt: str | RecalledPrompt) -> tuple[str, str]:
+    if isinstance(prompt, str):
+        return prompt, prompt
+    return prompt.text, reference_prompt(prompt.text, prompt.facts)
+
+
+def _drop_reference(
+    messages: list[ModelMessage],
+    sent: str,
+    question: str,
+) -> list[ModelMessage]:
+    """Replace this run's reference prompt with the original question."""
+    if sent == question:
+        return messages
+    index = _reference_index(messages, sent)
+    if index is None:
+        return messages
+    rewritten = _rewrite_prompt(messages[index], sent, question)
+    return [*messages[:index], rewritten, *messages[index + 1 :]]
+
+
+def _reference_index(messages: Sequence[ModelMessage], sent: str) -> int | None:
+    for index in range(len(messages) - 1, -1, -1):
+        if _contains_prompt(messages[index], sent):
+            return index
+    return None
+
+
+def _contains_prompt(message: ModelMessage, sent: str) -> bool:
+    if not isinstance(message, ModelRequest):
+        return False
+    return any(
+        isinstance(part, UserPromptPart) and part.content == sent
+        for part in message.parts
+    )
+
+
+def _rewrite_prompt(message: ModelMessage, sent: str, question: str) -> ModelMessage:
+    if not isinstance(message, ModelRequest):
+        return message
+    parts = []
+    replaced = False
+    for part in message.parts:
+        if not replaced and isinstance(part, UserPromptPart) and part.content == sent:
+            parts.append(replace(part, content=question))
+            replaced = True
+        else:
+            parts.append(part)
+    return replace(message, parts=parts)
 
 
 def _recent_turns(messages: Sequence[ModelMessage], limit: int) -> list[ModelMessage]:

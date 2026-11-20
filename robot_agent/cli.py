@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from pydantic_ai.messages import ModelMessage
 
 from robot_agent.agent import AgentRequestError, ModelLimits, request_reply
+from robot_agent.context import RecalledPrompt, select_fact_texts
 from robot_agent.identity import UserProfile, resolve_user
 from robot_agent.memory import (
     MemoryRecord,
@@ -47,13 +48,27 @@ class _LimitSpec(NamedTuple):
     name: str
     default: int
     minimum: int
+    maximum: int | None
     description: str
 
 
 _LIMIT_SPECS = (
-    _LimitSpec("AGENT_MAX_HISTORY_TURNS", 6, 0, "a non-negative integer"),
-    _LimitSpec("AGENT_MAX_REQUEST_INPUT_TOKENS", 4096, 1, "a positive integer"),
-    _LimitSpec("AGENT_MAX_OUTPUT_TOKENS", 256, 1, "a positive integer"),
+    _LimitSpec("AGENT_MAX_HISTORY_TURNS", 6, 0, None, "a non-negative integer"),
+    _LimitSpec(
+        "AGENT_MAX_REQUEST_INPUT_TOKENS",
+        4096,
+        1,
+        None,
+        "a positive integer",
+    ),
+    _LimitSpec("AGENT_MAX_OUTPUT_TOKENS", 256, 1, None, "a positive integer"),
+    _LimitSpec(
+        "AGENT_MAX_RECALLED_MEMORIES",
+        0,
+        0,
+        3,
+        "an integer from 0 through 3",
+    ),
 )
 
 
@@ -86,7 +101,8 @@ def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
 
     Session and memory commands run locally. Each successful model turn
     is stored before its reply is printed. At most limits.max_history_turns
-    complete turns are sent next. Saved facts are not added to that history.
+    complete turns are sent next. Matching saved facts may be attached to
+    an ordinary request, and the stored turn keeps the original line.
     """
     while True:
         line = _read_line()
@@ -128,6 +144,7 @@ def _request_limits() -> ModelLimits:
         max_history_turns=values["AGENT_MAX_HISTORY_TURNS"],
         max_request_input_tokens=values["AGENT_MAX_REQUEST_INPUT_TOKENS"],
         max_output_tokens=values["AGENT_MAX_OUTPUT_TOKENS"],
+        max_recalled_memories=values["AGENT_MAX_RECALLED_MEMORIES"],
     )
 
 
@@ -136,9 +153,15 @@ def _parse_limit(spec: _LimitSpec) -> int:
     if raw is None:
         return spec.default
     value = _integer_setting(raw, spec)
-    if value < spec.minimum:
+    if not _in_range(value, spec):
         _invalid_limit(spec)
     return value
+
+
+def _in_range(value: int, spec: _LimitSpec) -> bool:
+    if value < spec.minimum:
+        return False
+    return spec.maximum is None or value <= spec.maximum
 
 
 def _integer_setting(raw: str, spec: _LimitSpec) -> int:
@@ -192,7 +215,7 @@ def _turn(
     reply, history, produced = _reply(
         model_name,
         chat.user_id,
-        text,
+        _recall_prompt(text, limits, chat),
         chat.history,
         limits,
     )
@@ -412,10 +435,23 @@ def _save_turn(chat: ActiveChat, messages: list[ModelMessage]) -> None:
         raise SystemExit(1) from exc
 
 
+def _recall_prompt(text: str, limits: ModelLimits, chat: ActiveChat) -> RecalledPrompt:
+    """Attach current matching facts, or the question alone when recall is off."""
+    if limits.max_recalled_memories <= 0:
+        return RecalledPrompt(text)
+    try:
+        records = list_memories(chat.store, chat.user_id)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return RecalledPrompt(text)
+    facts = select_fact_texts(text, records, limits.max_recalled_memories)
+    return RecalledPrompt(text, tuple(facts))
+
+
 def _reply(
     model_name: str,
     user_id: str,
-    prompt: str,
+    prompt: RecalledPrompt,
     history: list[ModelMessage],
     limits: ModelLimits,
 ) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
