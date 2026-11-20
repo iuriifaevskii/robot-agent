@@ -1,4 +1,4 @@
-"""SQLite storage for users, sessions, and conversation turns.
+"""SQLite storage for users, sessions, conversation turns, and memories.
 
 SQL stays in this module. It does not read the environment, print, or call
 the model.
@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -19,6 +20,12 @@ SAVE_FAILED = "Could not save the new conversation turn."
 CREATE_FAILED = "Could not create a new session."
 SELECTION_FAILED = "Could not save the active session."
 NOT_OWNER = "The session does not belong to this user."
+SAVE_MEMORY_FAILED = "Could not save the memory."
+UPDATE_MEMORY_FAILED = "Could not update the memory."
+DELETE_MEMORY_FAILED = "Could not delete the memory."
+MEMORY_READ_FAILED = "Could not read saved memories."
+MEMORY_NOT_OWNER = "The memory does not belong to this user."
+CLI_MEMORY_SOURCE = "cli"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -45,7 +52,26 @@ CREATE TABLE IF NOT EXISTS active_sessions (
     user_id TEXT PRIMARY KEY REFERENCES users (user_id),
     session_id TEXT NOT NULL REFERENCES sessions (session_id)
 );
+
+CREATE TABLE IF NOT EXISTS memories (
+    memory_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users (user_id),
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    source TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS memories_by_user ON memories (user_id);
 """
+
+
+class _MemoryInsert(NamedTuple):
+    memory_id: str
+    user_id: str
+    text: str
+    created_at: str
+    source: str
 
 
 class StorageError(Exception):
@@ -53,7 +79,7 @@ class StorageError(Exception):
 
 
 class ConversationStore:
-    """One SQLite file holding users, sessions, and complete turns."""
+    """One SQLite file holding users, sessions, turns, and saved facts."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -182,6 +208,71 @@ class ConversationStore:
         except sqlite3.Error as exc:
             raise StorageError(SAVE_FAILED) from exc
 
+    def save_memory(self, user_id: str, display_name: str, text: str) -> str:
+        """Insert one fact for user_id and return its new id.
+
+        Each call creates a separate record. created_at and updated_at start
+        equal. The source marks an explicit CLI save.
+        """
+        memory_id = str(uuid4())
+        created_at = _timestamp()
+        row = _MemoryInsert(memory_id, user_id, text, created_at, CLI_MEMORY_SOURCE)
+        try:
+            with self._connection:
+                self._ensure_user(user_id, display_name)
+                self._insert_memory(row)
+        except sqlite3.Error as exc:
+            raise StorageError(SAVE_MEMORY_FAILED) from exc
+        return memory_id
+
+    def list_memories(self, user_id: str) -> list[tuple[str, str, str, str]]:
+        """Return (memory_id, text, created_at, updated_at) for user_id.
+
+        Newest creation time comes first. Equal times use memory id ascending.
+        """
+        try:
+            rows = self._connection.execute(
+                """
+                SELECT memory_id, text, created_at, updated_at
+                FROM memories
+                WHERE user_id = ?
+                ORDER BY created_at DESC, memory_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise StorageError(MEMORY_READ_FAILED) from exc
+        return [
+            (
+                str(row["memory_id"]),
+                str(row["text"]),
+                str(row["created_at"]),
+                str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    def update_memory(self, user_id: str, memory_id: str, text: str) -> None:
+        """Replace the text of a fact owned by user_id.
+
+        The id and created_at stay the same. updated_at changes.
+        """
+        try:
+            with self._connection:
+                self._require_memory_owner(user_id, memory_id)
+                self._update_memory_text(user_id, memory_id, text)
+        except sqlite3.Error as exc:
+            raise StorageError(UPDATE_MEMORY_FAILED) from exc
+
+    def delete_memory(self, user_id: str, memory_id: str) -> None:
+        """Delete one fact owned by user_id. Other rows stay in place."""
+        try:
+            with self._connection:
+                self._require_memory_owner(user_id, memory_id)
+                self._delete_memory_row(user_id, memory_id)
+        except sqlite3.Error as exc:
+            raise StorageError(DELETE_MEMORY_FAILED) from exc
+
     def _oldest_session(self, user_id: str, display_name: str) -> str:
         with self._connection:
             self._ensure_user(user_id, display_name)
@@ -240,6 +331,58 @@ class ConversationStore:
             WHERE session_id = ? AND user_id = ?
             """,
             (session_id, user_id),
+        ).fetchone()
+        return row is not None
+
+    def _insert_memory(self, row: _MemoryInsert) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO memories (
+                memory_id, user_id, text, created_at, updated_at, source
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.memory_id,
+                row.user_id,
+                row.text,
+                row.created_at,
+                row.created_at,
+                row.source,
+            ),
+        )
+
+    def _update_memory_text(self, user_id: str, memory_id: str, text: str) -> None:
+        self._connection.execute(
+            """
+            UPDATE memories
+            SET text = ?, updated_at = ?
+            WHERE memory_id = ? AND user_id = ?
+            """,
+            (text, _timestamp(), memory_id, user_id),
+        )
+
+    def _delete_memory_row(self, user_id: str, memory_id: str) -> None:
+        self._connection.execute(
+            """
+            DELETE FROM memories
+            WHERE memory_id = ? AND user_id = ?
+            """,
+            (memory_id, user_id),
+        )
+
+    def _require_memory_owner(self, user_id: str, memory_id: str) -> None:
+        if self._owns_memory(user_id, memory_id):
+            return
+        raise StorageError(MEMORY_NOT_OWNER)
+
+    def _owns_memory(self, user_id: str, memory_id: str) -> bool:
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM memories
+            WHERE memory_id = ? AND user_id = ?
+            """,
+            (memory_id, user_id),
         ).fetchone()
         return row is not None
 

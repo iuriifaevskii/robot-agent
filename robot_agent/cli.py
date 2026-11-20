@@ -9,6 +9,14 @@ from pydantic_ai.messages import ModelMessage
 
 from robot_agent.agent import AgentRequestError, ModelLimits, request_reply
 from robot_agent.identity import UserProfile, resolve_user
+from robot_agent.memory import (
+    MemoryRecord,
+    delete_memory,
+    list_memories,
+    save_memory,
+    search_memories,
+    update_memory,
+)
 from robot_agent.sessions import (
     create_session,
     list_sessions,
@@ -26,6 +34,13 @@ RESUME_COMMAND = "/resume"
 NEW_USAGE = "Usage: /new"
 SESSIONS_USAGE = "Usage: /sessions"
 RESUME_USAGE = "Usage: /resume <session_id>"
+MEMORY_COMMAND = "/memory"
+MEMORY_USAGE = (
+    "Usage: /memory save <text> | list | search <query> | "
+    "update <id> <text> | delete <id>"
+)
+NO_MEMORIES = "No saved facts."
+NO_MEMORY_MATCHES = "No matching facts."
 
 
 class _LimitSpec(NamedTuple):
@@ -69,9 +84,9 @@ def main() -> None:
 def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
     """Read lines until /exit or end of input.
 
-    Session commands run locally. Each successful model turn is stored
-    before its reply is printed. At most limits.max_history_turns
-    complete turns are sent next.
+    Session and memory commands run locally. Each successful model turn
+    is stored before its reply is printed. At most limits.max_history_turns
+    complete turns are sent next. Saved facts are not added to that history.
     """
     while True:
         line = _read_line()
@@ -172,6 +187,8 @@ def _turn(
         return True
     if _session_command(text, limits, chat):
         return False
+    if _memory_command(text, chat):
+        return False
     reply, history, produced = _reply(
         model_name,
         chat.user_id,
@@ -263,6 +280,128 @@ def _session_line(session_id: str, created_at: str, chat: ActiveChat) -> str:
     if session_id == chat.session_id:
         return f"{session_id} {created_at} active"
     return f"{session_id} {created_at}"
+
+
+def _memory_command(text: str, chat: ActiveChat) -> bool:
+    """Run a local memory command. Return whether the line was one.
+
+    Invalid forms print usage and leave saved facts unchanged.
+    These commands do not call the model or record a turn.
+    """
+    if text.split(maxsplit=1)[0] != MEMORY_COMMAND:
+        return False
+    _run_memory(text[len(MEMORY_COMMAND) :].lstrip(), chat)
+    return True
+
+
+def _run_memory(remainder: str, chat: ActiveChat) -> None:
+    if not remainder:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    name, payload = _split_payload(remainder)
+    handler = _MEMORY_HANDLERS.get(name)
+    if handler is None:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    handler(payload, chat)
+
+
+def _split_payload(remainder: str) -> tuple[str, str]:
+    parts = remainder.split(maxsplit=1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
+def _save_memory(payload: str, chat: ActiveChat) -> None:
+    if not payload:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    try:
+        memory_id = save_memory(
+            chat.store,
+            chat.user_id,
+            chat.display_name,
+            payload,
+        )
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    print(memory_id)
+
+
+def _list_memories(payload: str, chat: ActiveChat) -> None:
+    if payload:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    try:
+        found = list_memories(chat.store, chat.user_id)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    _print_memories(found, NO_MEMORIES)
+
+
+def _search_memories(payload: str, chat: ActiveChat) -> None:
+    if not payload:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    try:
+        found = search_memories(chat.store, chat.user_id, payload)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    _print_memories(found, NO_MEMORY_MATCHES)
+
+
+def _update_memory(payload: str, chat: ActiveChat) -> None:
+    target = _update_target(payload)
+    if target is None:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    memory_id, text = target
+    try:
+        update_memory(chat.store, chat.user_id, memory_id, text)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    print(f"Updated {memory_id}.")
+
+
+def _delete_memory(payload: str, chat: ActiveChat) -> None:
+    if len(payload.split()) != 1:
+        print(MEMORY_USAGE, file=sys.stderr)
+        return
+    try:
+        delete_memory(chat.store, chat.user_id, payload)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    print(f"Deleted {payload}.")
+
+
+def _update_target(payload: str) -> tuple[str, str] | None:
+    parts = payload.split(maxsplit=1)
+    if len(parts) != 2 or not parts[1]:
+        return None
+    return parts[0], parts[1]
+
+
+def _print_memories(found: list[MemoryRecord], empty_message: str) -> None:
+    if not found:
+        print(empty_message)
+        return
+    for record in found:
+        print(f"{record.memory_id} {record.text}")
+
+
+_MEMORY_HANDLERS = {
+    "save": _save_memory,
+    "list": _list_memories,
+    "search": _search_memories,
+    "update": _update_memory,
+    "delete": _delete_memory,
+}
 
 
 def _save_turn(chat: ActiveChat, messages: list[ModelMessage]) -> None:
