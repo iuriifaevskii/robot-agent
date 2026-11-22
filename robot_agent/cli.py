@@ -7,9 +7,11 @@ from typing import NamedTuple
 from dotenv import load_dotenv
 from pydantic_ai.messages import ModelMessage
 
+from robot_agent import tools
 from robot_agent.agent import (
     AgentRequestError,
     ModelLimits,
+    ModelReply,
     request_reply,
     request_summary,
 )
@@ -37,6 +39,16 @@ from robot_agent.sessions import (
     resume_session,
 )
 from robot_agent.storage import ConversationStore, StorageError, connect
+from robot_agent.usage import (
+    MAX_REQUESTS_SETTING,
+    MAX_TOKENS_SETTING,
+    NO_BUDGET,
+    UNTRUSTED_MESSAGE,
+    DailyBudget,
+    UsageCounts,
+    blocking_limit,
+    refusal_message,
+)
 
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
 DEFAULT_DATABASE_PATH = "robot-agent.sqlite3"
@@ -84,6 +96,11 @@ _LIMIT_SPECS = (
     _LimitSpec("AGENT_SUMMARY_AFTER_TURNS", 0, 0, None, "a non-negative integer"),
 )
 
+_BUDGET_SPECS = (
+    _LimitSpec(MAX_REQUESTS_SETTING, 0, 0, None, "a non-negative integer"),
+    _LimitSpec(MAX_TOKENS_SETTING, 0, 0, None, "a non-negative integer"),
+)
+
 
 class _SummaryState(NamedTuple):
     """The stored summary text, its covered turn position and the saved turns."""
@@ -103,15 +120,18 @@ class ActiveChat:
     history: list[ModelMessage]
     store: ConversationStore
     summary_failed: bool = False
+    budget: DailyBudget = NO_BUDGET
+    usage_untrusted: bool = False
 
 
 def main() -> None:
     load_dotenv()
     _require_env()
     limits = _request_limits()
+    budget = _daily_budget()
     profile = resolve_user()
     try:
-        chat = _open_chat(profile, limits.max_history_turns)
+        chat = _open_chat(profile, limits.max_history_turns, budget)
     except StorageError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
@@ -135,7 +155,11 @@ def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
             return
 
 
-def _open_chat(profile: UserProfile, history_limit: int) -> ActiveChat:
+def _open_chat(
+    profile: UserProfile,
+    history_limit: int,
+    budget: DailyBudget = NO_BUDGET,
+) -> ActiveChat:
     store = connect(_database_path())
     session_id = open_session(store, profile.user_id, profile.display_name)
     history = store.load_recent(profile.user_id, session_id, history_limit)
@@ -145,6 +169,7 @@ def _open_chat(profile: UserProfile, history_limit: int) -> ActiveChat:
         session_id,
         history,
         store,
+        budget=budget,
     )
 
 
@@ -170,6 +195,11 @@ def _request_limits() -> ModelLimits:
         max_recalled_memories=values["AGENT_MAX_RECALLED_MEMORIES"],
         summary_after_turns=values["AGENT_SUMMARY_AFTER_TURNS"],
     )
+
+
+def _daily_budget() -> DailyBudget:
+    max_requests, max_tokens = (_parse_limit(spec) for spec in _BUDGET_SPECS)
+    return DailyBudget(max_requests, max_tokens)
 
 
 def _parse_limit(spec: _LimitSpec) -> int:
@@ -236,18 +266,33 @@ def _turn(
         return False
     if _memory_command(text, chat):
         return False
-    summary, outgoing = _summary_context(model_name, limits, chat)
-    reply, history, produced = _reply(
-        model_name,
-        chat.user_id,
-        _recall_prompt(text, summary, limits, chat),
-        outgoing,
-        limits,
-    )
-    _save_turn(chat, produced)
-    chat.history = history
-    print(reply)
+    _paid_turn(model_name, text, limits, chat)
     return False
+
+
+def _paid_turn(
+    model_name: str,
+    text: str,
+    limits: ModelLimits,
+    chat: ActiveChat,
+) -> None:
+    """Send an ordinary line to the model unless the daily budget is reached.
+
+    The budget is checked before the summarizer and again before the chat
+    request. A refused line saves nothing and is not retried.
+    """
+    if not _budget_open(chat):
+        return
+    summary, outgoing = _summary_context(model_name, limits, chat)
+    if not _budget_open(chat):
+        return
+    reply = _reply(
+        model_name, _recall_prompt(text, summary, limits, chat), outgoing, limits, chat
+    )
+    _record_usage(chat, reply.usage)
+    _save_turn(chat, reply.produced)
+    chat.history = reply.history
+    print(reply.text)
 
 
 def _session_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
@@ -506,14 +551,23 @@ def _refresh_summary(
         return state
     try:
         text = _summarize(model_name, limits, chat, state, span)
-    except (AgentRequestError, StorageError) as exc:
-        chat.summary_failed = True
-        print(f"Warning: summary skipped. {exc}", file=sys.stderr)
-        return state
+    except AgentRequestError as exc:
+        _record_usage(chat, exc.usage)
+        return _summary_skipped(chat, state, exc)
+    except StorageError as exc:
+        return _summary_skipped(chat, state, exc)
     count = span[1] - span[0] + 1
     noun = "turn" if count == 1 else "turns"
     print(f"Summarized {count} earlier {noun}.", file=sys.stderr)
     return _SummaryState(text, span[1], state.total)
+
+
+def _summary_skipped(
+    chat: ActiveChat, state: _SummaryState, exc: Exception
+) -> _SummaryState:
+    chat.summary_failed = True
+    print(f"Warning: summary skipped. {exc}", file=sys.stderr)
+    return state
 
 
 def _summarize(
@@ -524,7 +578,10 @@ def _summarize(
     span: tuple[int, int],
 ) -> str:
     older = chat.store.load_turns(chat.user_id, chat.session_id, span[0], span[1])
-    text = request_summary(model_name, state.text, summary_transcript(older), limits)
+    text, usage = request_summary(
+        model_name, state.text, summary_transcript(older), limits
+    )
+    _record_usage(chat, usage)
     chat.store.save_summary(chat.user_id, chat.session_id, text, span[1])
     return text
 
@@ -554,13 +611,52 @@ def _recalled_facts(
 
 def _reply(
     model_name: str,
-    user_id: str,
     prompt: RecalledPrompt,
     history: list[ModelMessage],
     limits: ModelLimits,
-) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
+    chat: ActiveChat,
+) -> ModelReply:
     try:
-        return request_reply(model_name, user_id, prompt, history, limits)
+        return request_reply(model_name, chat.user_id, prompt, history, limits)
     except AgentRequestError as exc:
+        _record_usage(chat, exc.usage)
         print(f"Agent request failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+
+def _today() -> str:
+    return tools.read_local_clock().date().isoformat()
+
+
+def _budget_open(chat: ActiveChat) -> bool:
+    """Return whether a paid request may be sent. Print the reason when not.
+
+    With no limit enabled nothing is read. If today's counters cannot be
+    determined, or an earlier recording failed, no request is sent.
+    """
+    if not chat.budget.enabled:
+        return True
+    if chat.usage_untrusted:
+        print(UNTRUSTED_MESSAGE, file=sys.stderr)
+        return False
+    try:
+        used = UsageCounts(*chat.store.daily_usage(_today()))
+    except (StorageError, tools.ClockReadError) as exc:
+        print(str(exc), file=sys.stderr)
+        return False
+    limit = blocking_limit(used, chat.budget)
+    if limit is None:
+        return True
+    print(refusal_message(limit, used, chat.budget), file=sys.stderr)
+    return False
+
+
+def _record_usage(chat: ActiveChat, usage: UsageCounts | None) -> None:
+    """Add a completed run's reported usage to today's counters."""
+    if usage is None or not chat.budget.enabled:
+        return
+    try:
+        chat.store.add_daily_usage(_today(), *usage)
+    except (StorageError, tools.ClockReadError) as exc:
+        chat.usage_untrusted = True
+        print(f"Warning: daily usage was not recorded. {exc}", file=sys.stderr)

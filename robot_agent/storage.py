@@ -1,4 +1,4 @@
-"""SQLite storage for users, sessions, turns, session summaries, and memories.
+"""SQLite storage for users, sessions, turns, summaries, memories, and daily usage.
 
 SQL stays in this module. It does not read the environment, print, or call
 the model.
@@ -27,6 +27,8 @@ MEMORY_READ_FAILED = "Could not read saved memories."
 MEMORY_NOT_OWNER = "The memory does not belong to this user."
 SUMMARY_READ_FAILED = "Could not read the session summary."
 SUMMARY_SAVE_FAILED = "Could not save the session summary."
+USAGE_READ_FAILED = "Could not read the daily usage."
+USAGE_SAVE_FAILED = "Could not save the daily usage."
 CLI_MEMORY_SOURCE = "cli"
 
 _SCHEMA = """
@@ -72,6 +74,13 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 
 CREATE INDEX IF NOT EXISTS memories_by_user ON memories (user_id);
+
+CREATE TABLE IF NOT EXISTS daily_usage (
+    day TEXT PRIMARY KEY,
+    requests INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL
+);
 """
 
 
@@ -306,6 +315,55 @@ class ConversationStore:
                 )
         except sqlite3.Error as exc:
             raise StorageError(SAVE_FAILED) from exc
+
+    def daily_usage(self, day: str) -> tuple[int, int, int]:
+        """Return (requests, input_tokens, output_tokens) for a local date.
+
+        A day with no row reports zeros. Usage is device-wide, not per user.
+        """
+        try:
+            row = self._connection.execute(
+                """
+                SELECT requests, input_tokens, output_tokens
+                FROM daily_usage
+                WHERE day = ?
+                """,
+                (day,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(USAGE_READ_FAILED) from exc
+        if row is None:
+            return 0, 0, 0
+        return int(row[0]), int(row[1]), int(row[2])
+
+    def add_daily_usage(
+        self,
+        day: str,
+        requests: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Add to the counters for a local date in one transaction.
+
+        The increment happens in SQL, so no read-modify-write is needed.
+        """
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO daily_usage (
+                        day, requests, input_tokens, output_tokens
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (day) DO UPDATE SET
+                        requests = requests + excluded.requests,
+                        input_tokens = input_tokens + excluded.input_tokens,
+                        output_tokens = output_tokens + excluded.output_tokens
+                    """,
+                    (day, requests, input_tokens, output_tokens),
+                )
+        except sqlite3.Error as exc:
+            raise StorageError(USAGE_SAVE_FAILED) from exc
 
     def save_memory(self, user_id: str, display_name: str, text: str) -> str:
         """Insert one fact for user_id and return its new id.

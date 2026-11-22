@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     ToolCallPart,
 )
+from pydantic_ai.usage import RunUsage
 
 from robot_agent import agent, cli, storage
 from robot_agent.context import SUMMARY_LABEL
@@ -33,10 +34,12 @@ class _Result:
         output: str,
         messages: list[ModelMessage],
         produced: list[ModelMessage],
+        usage: RunUsage | None = None,
     ) -> None:
         self.output = output
         self._messages = messages
         self._produced = produced
+        self.usage = usage or RunUsage(requests=1, input_tokens=10, output_tokens=5)
 
     def all_messages(self) -> list[ModelMessage]:
         return self._messages
@@ -61,30 +64,33 @@ class _Backend:
     outcomes: list[str | Exception] = field(default_factory=list)
     main: list[_Sent] = field(default_factory=list)
     summarizer: list[_Sent] = field(default_factory=list)
+    usages: list[RunUsage] = field(default_factory=list)
 
     def respond(self, sent: _Sent) -> _Result:
+        usage = self.usages.pop(0) if self.usages else None
         if "instructions" in sent.init:
-            return self._summarize(sent)
+            return self._summarize(sent, usage)
         self.main.append(sent)
         reply = f"reply {len(self.main)}"
         turn = _exchange(sent.prompt, reply)
-        return _Result(reply, [*sent.history, *turn], turn)
+        return _Result(reply, [*sent.history, *turn], turn, usage)
 
-    def _summarize(self, sent: _Sent) -> _Result:
+    def _summarize(self, sent: _Sent, usage: RunUsage | None) -> _Result:
         self.summarizer.append(sent)
         if not self.outcomes:
             raise AssertionError("unexpected summarizer request")
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
-        return _Result(outcome, [], [])
+        return _Result(outcome, [], [], usage)
 
 
 def _install(
     monkeypatch: pytest.MonkeyPatch,
     outcomes: list[str | Exception] | None = None,
+    usages: list[RunUsage] | None = None,
 ) -> _Backend:
-    backend = _Backend(list(outcomes or []))
+    backend = _Backend(list(outcomes or []), usages=list(usages or []))
 
     class _Agent:
         def __init__(self, model: str, **kwargs: object) -> None:

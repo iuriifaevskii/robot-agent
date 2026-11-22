@@ -157,7 +157,7 @@ def test_time_question_runs_the_tool_and_keeps_the_exchange(
     )
     _use_model(monkeypatch, model)
 
-    reply, history, _produced = agent.request_reply(
+    reply, history, _produced, _usage = agent.request_reply(
         "test-model",
         "local-user",
         TIME_PROMPT,
@@ -230,7 +230,7 @@ def test_later_turn_receives_the_tool_exchange_within_the_history_limit(
     limits = _limits(max_history_turns=1)
     history: list[ModelMessage] = []
     for prompt in (TIME_PROMPT, "next", "after"):
-        _reply, history, _produced = agent.request_reply(
+        _reply, history, _produced, _usage = agent.request_reply(
             "test-model",
             "local-user",
             prompt,

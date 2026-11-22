@@ -16,6 +16,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RunUsage
 
 from robot_agent import agent, cli, identity, storage
 from robot_agent.storage import StorageError
@@ -45,6 +46,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> Path:
         "AGENT_MAX_OUTPUT_TOKENS",
         "AGENT_MAX_RECALLED_MEMORIES",
         "AGENT_SUMMARY_AFTER_TURNS",
+        "AGENT_DAILY_MAX_REQUESTS",
+        "AGENT_DAILY_MAX_TOKENS",
         "AGENT_DB_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -141,6 +144,15 @@ class _ModelScript:
     histories: list[list[ModelMessage]] | None = None
     token_counts: list[int] = field(default_factory=list)
     new_turns: list[list[ModelMessage]] | None = None
+    usages: list[RunUsage] = field(default_factory=list)
+
+
+def _usage(requests: int, input_tokens: int, output_tokens: int) -> RunUsage:
+    return RunUsage(
+        requests=requests,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
 
 
 class _Result:
@@ -149,10 +161,12 @@ class _Result:
         output: str,
         messages: list[ModelMessage],
         produced: list[ModelMessage],
+        usage: RunUsage | None = None,
     ) -> None:
         self.output = output
         self._messages = messages
         self._produced = produced
+        self.usage = usage or _usage(1, 10, 5)
 
     def all_messages(self) -> list[ModelMessage]:
         return self._messages
@@ -169,6 +183,7 @@ class _Playback:
         self.histories = None if script.histories is None else list(script.histories)
         self.new_turns = None if script.new_turns is None else list(script.new_turns)
         self.counts = list(script.token_counts)
+        self.usages = list(script.usages)
         self.calls = calls
         self.user_id = ""
         self.model_name = ""
@@ -202,7 +217,8 @@ class _Playback:
             raise self.error
         reply = _next_reply(self.replies, prompt)
         returned = _next_history(history, self.histories)
-        return _Result(reply, returned, self._produced(history, returned))
+        usage = self.usages.pop(0) if self.usages else None
+        return _Result(reply, returned, self._produced(history, returned), usage)
 
     def _produced(
         self,
