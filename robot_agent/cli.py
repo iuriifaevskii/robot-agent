@@ -7,8 +7,20 @@ from typing import NamedTuple
 from dotenv import load_dotenv
 from pydantic_ai.messages import ModelMessage
 
-from robot_agent.agent import AgentRequestError, ModelLimits, request_reply
-from robot_agent.context import RecalledPrompt, select_fact_texts
+from robot_agent.agent import (
+    AgentRequestError,
+    ModelLimits,
+    request_reply,
+    request_summary,
+)
+from robot_agent.context import (
+    RecalledPrompt,
+    recent_turns,
+    select_fact_texts,
+    sendable_turns,
+    summary_span,
+    summary_transcript,
+)
 from robot_agent.identity import UserProfile, resolve_user
 from robot_agent.memory import (
     MemoryRecord,
@@ -69,7 +81,16 @@ _LIMIT_SPECS = (
         3,
         "an integer from 0 through 3",
     ),
+    _LimitSpec("AGENT_SUMMARY_AFTER_TURNS", 0, 0, None, "a non-negative integer"),
 )
+
+
+class _SummaryState(NamedTuple):
+    """The stored summary text, its covered turn position and the saved turns."""
+
+    text: str
+    covered: int
+    total: int
 
 
 @dataclass
@@ -81,6 +102,7 @@ class ActiveChat:
     session_id: str
     history: list[ModelMessage]
     store: ConversationStore
+    summary_failed: bool = False
 
 
 def main() -> None:
@@ -101,8 +123,9 @@ def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
 
     Session and memory commands run locally. Each successful model turn
     is stored before its reply is printed. At most limits.max_history_turns
-    complete turns are sent next. Matching saved facts may be attached to
-    an ordinary request, and the stored turn keeps the original line.
+    complete turns are sent next. Matching saved facts and a session summary
+    may be attached to an ordinary request, and the stored turn keeps the
+    original line.
     """
     while True:
         line = _read_line()
@@ -145,6 +168,7 @@ def _request_limits() -> ModelLimits:
         max_request_input_tokens=values["AGENT_MAX_REQUEST_INPUT_TOKENS"],
         max_output_tokens=values["AGENT_MAX_OUTPUT_TOKENS"],
         max_recalled_memories=values["AGENT_MAX_RECALLED_MEMORIES"],
+        summary_after_turns=values["AGENT_SUMMARY_AFTER_TURNS"],
     )
 
 
@@ -212,11 +236,12 @@ def _turn(
         return False
     if _memory_command(text, chat):
         return False
+    summary, outgoing = _summary_context(model_name, limits, chat)
     reply, history, produced = _reply(
         model_name,
         chat.user_id,
-        _recall_prompt(text, limits, chat),
-        chat.history,
+        _recall_prompt(text, summary, limits, chat),
+        outgoing,
         limits,
     )
     _save_turn(chat, produced)
@@ -435,17 +460,96 @@ def _save_turn(chat: ActiveChat, messages: list[ModelMessage]) -> None:
         raise SystemExit(1) from exc
 
 
-def _recall_prompt(text: str, limits: ModelLimits, chat: ActiveChat) -> RecalledPrompt:
-    """Attach current matching facts, or the question alone when recall is off."""
+def _summary_context(
+    model_name: str,
+    limits: ModelLimits,
+    chat: ActiveChat,
+) -> tuple[str, list[ModelMessage]]:
+    """Return the summary text and the turns to send, refreshing it when due.
+
+    With summaries off, nothing is read and the history is unchanged.
+    """
+    if limits.summary_after_turns <= 0:
+        return "", chat.history
+    try:
+        state = _summary_state(chat)
+    except StorageError as exc:
+        print(f"Warning: {exc}", file=sys.stderr)
+        return "", chat.history
+    state = _refresh_summary(model_name, limits, chat, state)
+    count = sendable_turns(state.total, limits.max_history_turns, state.covered)
+    return state.text, recent_turns(chat.history, count)
+
+
+def _summary_state(chat: ActiveChat) -> _SummaryState:
+    stored = chat.store.load_summary(chat.user_id, chat.session_id)
+    total = chat.store.turn_count(chat.user_id, chat.session_id)
+    if stored is None:
+        return _SummaryState("", 0, total)
+    return _SummaryState(stored[0], stored[1], total)
+
+
+def _refresh_summary(
+    model_name: str,
+    limits: ModelLimits,
+    chat: ActiveChat,
+    state: _SummaryState,
+) -> _SummaryState:
+    """Make at most one summarizer request when enough older turns are uncovered."""
+    span = summary_span(
+        state.total,
+        limits.max_history_turns,
+        state.covered,
+        limits.summary_after_turns,
+    )
+    if chat.summary_failed or span is None:
+        return state
+    try:
+        text = _summarize(model_name, limits, chat, state, span)
+    except (AgentRequestError, StorageError) as exc:
+        chat.summary_failed = True
+        print(f"Warning: summary skipped. {exc}", file=sys.stderr)
+        return state
+    count = span[1] - span[0] + 1
+    noun = "turn" if count == 1 else "turns"
+    print(f"Summarized {count} earlier {noun}.", file=sys.stderr)
+    return _SummaryState(text, span[1], state.total)
+
+
+def _summarize(
+    model_name: str,
+    limits: ModelLimits,
+    chat: ActiveChat,
+    state: _SummaryState,
+    span: tuple[int, int],
+) -> str:
+    older = chat.store.load_turns(chat.user_id, chat.session_id, span[0], span[1])
+    text = request_summary(model_name, state.text, summary_transcript(older), limits)
+    chat.store.save_summary(chat.user_id, chat.session_id, text, span[1])
+    return text
+
+
+def _recall_prompt(
+    text: str,
+    summary: str,
+    limits: ModelLimits,
+    chat: ActiveChat,
+) -> RecalledPrompt:
+    """Attach the summary and current matching facts to the question."""
+    return RecalledPrompt(text, _recalled_facts(text, limits, chat), summary)
+
+
+def _recalled_facts(
+    text: str, limits: ModelLimits, chat: ActiveChat
+) -> tuple[str, ...]:
     if limits.max_recalled_memories <= 0:
-        return RecalledPrompt(text)
+        return ()
     try:
         records = list_memories(chat.store, chat.user_id)
     except StorageError as exc:
         print(str(exc), file=sys.stderr)
-        return RecalledPrompt(text)
-    facts = select_fact_texts(text, records, limits.max_recalled_memories)
-    return RecalledPrompt(text, tuple(facts))
+        return ()
+    return tuple(select_fact_texts(text, records, limits.max_recalled_memories))
 
 
 def _reply(

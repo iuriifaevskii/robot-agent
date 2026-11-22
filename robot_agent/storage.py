@@ -1,4 +1,4 @@
-"""SQLite storage for users, sessions, conversation turns, and memories.
+"""SQLite storage for users, sessions, turns, session summaries, and memories.
 
 SQL stays in this module. It does not read the environment, print, or call
 the model.
@@ -25,6 +25,8 @@ UPDATE_MEMORY_FAILED = "Could not update the memory."
 DELETE_MEMORY_FAILED = "Could not delete the memory."
 MEMORY_READ_FAILED = "Could not read saved memories."
 MEMORY_NOT_OWNER = "The memory does not belong to this user."
+SUMMARY_READ_FAILED = "Could not read the session summary."
+SUMMARY_SAVE_FAILED = "Could not save the session summary."
 CLI_MEMORY_SOURCE = "cli"
 
 _SCHEMA = """
@@ -46,6 +48,13 @@ CREATE TABLE IF NOT EXISTS messages (
     position INTEGER NOT NULL,
     body TEXT NOT NULL,
     PRIMARY KEY (session_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    session_id TEXT PRIMARY KEY REFERENCES sessions (session_id),
+    text TEXT NOT NULL,
+    covered_through INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS active_sessions (
@@ -185,6 +194,96 @@ class ConversationStore:
         for row in reversed(rows):
             loaded.extend(_deserialize(str(row["body"])))
         return loaded
+
+    def turn_count(self, user_id: str, session_id: str) -> int:
+        """Return how many turns are saved in a session owned by user_id."""
+        try:
+            self._require_owner(user_id, session_id)
+            row = self._connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(READ_FAILED) from exc
+        return int(row[0])
+
+    def load_turns(
+        self,
+        user_id: str,
+        session_id: str,
+        first: int,
+        last: int,
+    ) -> list[ModelMessage]:
+        """Return turns at positions first through last, oldest first.
+
+        Positions start at 1. The session must belong to user_id.
+        """
+        try:
+            self._require_owner(user_id, session_id)
+            rows = self._connection.execute(
+                """
+                SELECT body FROM messages
+                WHERE session_id = ? AND position BETWEEN ? AND ?
+                ORDER BY position
+                """,
+                (session_id, first, last),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise StorageError(READ_FAILED) from exc
+        loaded: list[ModelMessage] = []
+        for row in rows:
+            loaded.extend(_deserialize(str(row["body"])))
+        return loaded
+
+    def load_summary(self, user_id: str, session_id: str) -> tuple[str, int] | None:
+        """Return (text, covered_through) for the session, or None if absent.
+
+        The session must belong to user_id.
+        """
+        try:
+            self._require_owner(user_id, session_id)
+            row = self._connection.execute(
+                """
+                SELECT text, covered_through FROM summaries
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(SUMMARY_READ_FAILED) from exc
+        if row is None:
+            return None
+        return str(row["text"]), int(row["covered_through"])
+
+    def save_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        text: str,
+        covered_through: int,
+    ) -> None:
+        """Replace the session's summary in one transaction.
+
+        The session must belong to user_id. Saved turns are not changed.
+        """
+        try:
+            with self._connection:
+                self._require_owner(user_id, session_id)
+                self._connection.execute(
+                    """
+                    INSERT INTO summaries (
+                        session_id, text, covered_through, updated_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        text = excluded.text,
+                        covered_through = excluded.covered_through,
+                        updated_at = excluded.updated_at
+                    """,
+                    (session_id, text, covered_through, _timestamp()),
+                )
+        except sqlite3.Error as exc:
+            raise StorageError(SUMMARY_SAVE_FAILED) from exc
 
     def append_turn(
         self,
