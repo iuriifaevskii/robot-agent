@@ -56,7 +56,9 @@ EXIT_COMMAND = "/exit"
 NEW_COMMAND = "/new"
 SESSIONS_COMMAND = "/sessions"
 RESUME_COMMAND = "/resume"
+TIME_COMMAND = "/time"
 NEW_USAGE = "Usage: /new"
+TIME_USAGE = "Usage: /time"
 SESSIONS_USAGE = "Usage: /sessions"
 RESUME_USAGE = "Usage: /resume <session_id>"
 MEMORY_COMMAND = "/memory"
@@ -141,7 +143,7 @@ def main() -> None:
 def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
     """Read lines until /exit or end of input.
 
-    Session and memory commands run locally. Each successful model turn
+    Session, memory and /time commands run locally. Each successful model turn
     is stored before its reply is printed. At most limits.max_history_turns
     complete turns are sent next. Matching saved facts and a session summary
     may be attached to an ordinary request, and the stored turn keeps the
@@ -262,12 +264,19 @@ def _turn(
         return False
     if text == EXIT_COMMAND:
         return True
-    if _session_command(text, limits, chat):
-        return False
-    if _memory_command(text, chat):
+    if _local_command(text, limits, chat):
         return False
     _paid_turn(model_name, text, limits, chat)
     return False
+
+
+def _local_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
+    """Run a local command. Return whether the line was one."""
+    return (
+        _session_command(text, limits, chat)
+        or _memory_command(text, chat)
+        or _time_command(text)
+    )
 
 
 def _paid_turn(
@@ -312,6 +321,26 @@ def _session_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
         _resume_session(args, limits, chat)
         return True
     return False
+
+
+def _time_command(text: str) -> bool:
+    """Print the local time. Return whether the line was /time.
+
+    This does not call the model, read storage or usage, or record a turn.
+    """
+    name, args = _command_parts(text)
+    if name != TIME_COMMAND:
+        return False
+    if args:
+        print(TIME_USAGE, file=sys.stderr)
+        return True
+    try:
+        timestamp = tools.current_local_time()
+    except tools.ClockReadError as exc:
+        print(str(exc), file=sys.stderr)
+        return True
+    print(timestamp)
+    return True
 
 
 def _command_parts(text: str) -> tuple[str, list[str]]:
