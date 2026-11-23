@@ -5,10 +5,12 @@ Terminal input and output stay in cli.py. Saved history stays in storage.py.
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from typing import Any, NamedTuple
 
 from pydantic_ai import (
     Agent,
     AgentRunError,
+    AgentRunResult,
     ModelRequest,
     ModelSettings,
     UsageLimitExceeded,
@@ -26,6 +28,7 @@ from robot_agent.context import (
     summary_input,
 )
 from robot_agent.tools import ClockReadError, current_local_time
+from robot_agent.usage import UsageCounts
 
 SUMMARY_INSTRUCTION = (
     "Write a brief summary of what was said in the earlier conversation turns. "
@@ -38,7 +41,24 @@ SUMMARY_INSTRUCTION = (
 
 
 class AgentRequestError(Exception):
-    """The model request failed. The message is safe to print."""
+    """The model request failed. The message is safe to print.
+
+    usage is set when a run completed and the application then rejected its
+    output, because that usage was spent. It is None when no run completed.
+    """
+
+    def __init__(self, message: str, usage: UsageCounts | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
+class ModelReply(NamedTuple):
+    """A chat run: reply text, bounded history, new messages, reported usage."""
+
+    text: str
+    history: list[ModelMessage]
+    produced: list[ModelMessage]
+    usage: UsageCounts
 
 
 @dataclass(frozen=True)
@@ -58,7 +78,7 @@ def run_model(
     user_id: str,
     message_history: Sequence[ModelMessage],
     limits: ModelLimits,
-) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
+) -> ModelReply:
     """Call the OpenAI model for the resolved user.
 
     The current local date and time tool is available for the model to call.
@@ -69,7 +89,8 @@ def run_model(
     once. Recalled fact text is untrusted reference data for this request,
     then removed from both returned message lists. The second list keeps at
     most limits.max_history_turns complete turns after this successful run.
-    The third list is only the messages produced by this run.
+    The third list is only the messages produced by this run. The usage is
+    what the completed run reported, including every model request it made.
     """
     question, sent = _outgoing_prompt(prompt)
     outgoing = recent_turns(message_history, limits.max_history_turns)
@@ -88,14 +109,15 @@ def run_model(
         model_settings=settings,
         usage_limits=usage_limits,
     )
+    reported = _reported(result)
     if not isinstance(result.output, str):
-        raise AgentRequestError("The model returned a non-text response.")
+        raise AgentRequestError("The model returned a non-text response.", reported)
     produced = _drop_reference(list(result.new_messages()), sent, question)
     kept = recent_turns(
         _drop_reference(list(result.all_messages()), sent, question),
         limits.max_history_turns,
     )
-    return result.output, kept, produced
+    return ModelReply(result.output, kept, produced, reported)
 
 
 def request_reply(
@@ -104,8 +126,8 @@ def request_reply(
     prompt: str | RecalledPrompt,
     message_history: Sequence[ModelMessage],
     limits: ModelLimits,
-) -> tuple[str, list[ModelMessage], list[ModelMessage]]:
-    """Return the reply, bounded history, and messages produced by this run."""
+) -> ModelReply:
+    """Return the reply, bounded history, produced messages, and usage."""
     try:
         return run_model(model_name, prompt, user_id, message_history, limits)
     except UsageLimitExceeded as exc:
@@ -122,10 +144,11 @@ def request_summary(
     previous: str,
     transcript: str,
     limits: ModelLimits,
-) -> str:
-    """Return a new summary of the transcript, folded with the previous one.
+) -> tuple[str, UsageCounts]:
+    """Return a new summary of the transcript and the run's reported usage.
 
-    One request, no tools. The input limits and output cap are the chat's.
+    The summary folds in the previous one. One request, no tools. The input
+    limits and output cap are the chat's.
     The previous summary and transcript are untrusted data. Tests replace
     the agent so checks never call the OpenAI API.
     """
@@ -137,7 +160,9 @@ def request_summary(
         raise AgentRequestError(_failure_message(exc)) from exc
 
 
-def _run_summary(model_name: str, prompt: str, limits: ModelLimits) -> str:
+def _run_summary(
+    model_name: str, prompt: str, limits: ModelLimits
+) -> tuple[str, UsageCounts]:
     summarizer = Agent(f"openai:{model_name}", instructions=SUMMARY_INSTRUCTION)
     result = summarizer.run_sync(
         prompt,
@@ -147,12 +172,18 @@ def _run_summary(model_name: str, prompt: str, limits: ModelLimits) -> str:
             count_tokens_before_request=True,
         ),
     )
+    reported = _reported(result)
     if not isinstance(result.output, str):
-        raise AgentRequestError("The model returned a non-text response.")
+        raise AgentRequestError("The model returned a non-text response.", reported)
     summary = accept_summary(result.output)
     if summary is None:
-        raise AgentRequestError("The model returned an unusable summary.")
-    return summary
+        raise AgentRequestError("The model returned an unusable summary.", reported)
+    return summary, reported
+
+
+def _reported(result: AgentRunResult[Any]) -> UsageCounts:
+    usage = result.usage
+    return UsageCounts(usage.requests, usage.input_tokens, usage.output_tokens)
 
 
 def _outgoing_prompt(prompt: str | RecalledPrompt) -> tuple[str, str]:
