@@ -3,9 +3,10 @@
 Build and use the agent on a computer first. Add physical robot capabilities
 incrementally after the agent, sessions and memory work well.
 
-This is an ordered product plan, not a status tracker. An item being listed does
-not mean it is implemented or authorize implementing it. Track actual work in
-GitHub issues, with one observable outcome per implementation issue.
+This is an ordered product plan. An item being listed does not authorize
+implementing it. Track actual work in GitHub issues, with one observable outcome
+per implementation issue. The **Status** notes in stage 1 are a snapshot as of
+PR #44; the linked issues and PRs remain the source of truth.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the boundaries to preserve.
 
 ## Product goal
@@ -26,37 +27,62 @@ Complete this milestone before introducing hardware dependencies. Each numbered
 step is a candidate for a separate future issue; split a step if necessary.
 
 1. Project environment, configuration and minimal entry point.
+   Status: done (#1, #6).
 2. One OpenAI request and a printed response, with clear configuration/API errors.
+   Status: done (#1, #4).
 3. One fixed local profile with a stable `user_id` (for example `local-user`).
    Resolve it in one place and pass it into application operations. No registration,
    switching UI, camera or recognition is required yet.
+   Status: done (#15).
 4. Interactive terminal chat with `/exit` and clean handling of empty input.
+   Status: done (#19).
 5. In-memory conversation history tied to the current user and session;
    preserve tool calls and results as well as text.
+   Status: done (#21).
 6. Bound per-turn model use before adding more model-driven features: retain only a
    configurable number of recent complete turns, reject oversized input before sending
    it where supported, and set a provider-side output-token limit. Do not call a
    summarizer just to enforce these limits.
+   Status: done (#25).
 7. One simple PydanticAI tool: current date and time, to exercise model tool calling.
    Keep exact deterministic shortcuts (such as a later `/time` command) local so they
    do not need an OpenAI request.
+   Status: done (#27 tool, #41 `/time`).
 8. SQLite persistence for the default user, sessions and messages, with restoration
    after restart. Reuse the same user ID; never create a new identity on each run.
+   Status: done (#29).
 9. Session commands: `/new`, `/sessions`, `/resume`. Scope listing and resume to
    the current user. A new session starts a fresh conversation, not a new profile.
+   Status: done (#31).
 10. Persistent user memory: save, search, update, delete and inspect remembered facts.
     Initially store long-term facts only when explicitly requested.
+    Status: done (#33): `/memory save|list|search|update|delete`.
 11. Conversation summaries and relevant context: summary + recent complete turns +
     relevant user memories. Summarize near a context threshold and at the end of
     a meaningful session; avoid repeatedly summarizing unchanged content.
+    Status: partly done. Matching saved facts are added to a request when enabled
+    (#35). Rolling session summaries are opt-in and triggered by a turn count, not a
+    token threshold (#37). Not done: a summary at the end of a session.
 12. Persistent usage limits: session and daily request/token budgets, tool-call rounds,
     and summary/speech/vision costs. Persist counters so restarting or opening a new
     session does not reset the daily limit. Per-turn input/output limits are step 6.
+    Status: partly done. Opt-in daily request/token budget, persisted in SQLite and
+    counting chat and summary requests (#39). A cap on model requests per chat turn
+    (#43); `tool_calls_limit` is not used. Not done: session-level budgets.
+    Speech and vision costs belong to their stages.
 13. Route supported deterministic commands locally, without asking the model to
     decide every time. Include date/time and session commands; reuse these operations
     later from voice and hardware adapters.
+    Status: partly done. `/time`, `/new`, `/sessions`, `/resume` and `/memory` run
+    locally (#31, #33, #41), but the code lives in `cli.py`, so other adapters cannot
+    reuse it yet. Extracting a shared dispatcher waits for a second adapter (see
+    #41). Natural-language time questions still go to the model and its tool.
 14. Stabilize interrupted requests, failed summary generation and restart recovery.
     Keep saved history if summarization fails; show clear errors without retry loops.
+    Status: partly done. A failed summary is skipped with a warning and the chat
+    continues (#37). A completed turn is saved in one SQLite transaction, so a failed
+    request leaves no partial turn. Not done: a failed chat request still ends the
+    process, and Ctrl+C is not handled.
 
 **Done when:** a terminal conversation survives restart, sessions remain separate,
 explicit memories are available in later sessions for the same user, and each model
