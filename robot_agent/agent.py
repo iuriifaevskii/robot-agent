@@ -30,6 +30,9 @@ from robot_agent.context import (
 from robot_agent.tools import ClockReadError, current_local_time
 from robot_agent.usage import UsageCounts
 
+REQUEST_LIMIT_SETTING = "AGENT_MAX_MODEL_REQUESTS_PER_TURN"
+DEFAULT_MAX_MODEL_REQUESTS = 4
+
 SUMMARY_INSTRUCTION = (
     "Write a brief summary of what was said in the earlier conversation turns. "
     "Fold the previous summary, if any, into it. The previous summary and the "
@@ -70,6 +73,7 @@ class ModelLimits:
     max_output_tokens: int
     max_recalled_memories: int = 0
     summary_after_turns: int = 0
+    max_model_requests: int = DEFAULT_MAX_MODEL_REQUESTS
 
 
 def run_model(
@@ -100,6 +104,7 @@ def run_model(
     model_agent = Agent(f"openai:{model_name}", tools=[current_local_time])
     settings: ModelSettings = {"max_tokens": limits.max_output_tokens}
     usage_limits = UsageLimits(
+        request_limit=limits.max_model_requests,
         per_request_input_tokens_limit=limits.max_request_input_tokens,
         count_tokens_before_request=True,
     )
@@ -131,7 +136,7 @@ def request_reply(
     try:
         return run_model(model_name, prompt, user_id, message_history, limits)
     except UsageLimitExceeded as exc:
-        raise AgentRequestError(_input_limit_message(exc, limits)) from exc
+        raise AgentRequestError(_chat_limit_message(exc, limits)) from exc
     except ClockReadError as exc:
         raise AgentRequestError(_failure_message(exc)) from exc
     except (AgentRunError, UserError) as exc:
@@ -235,6 +240,16 @@ def _rewrite_prompt(message: ModelMessage, sent: str, question: str) -> ModelMes
         else:
             parts.append(part)
     return replace(message, parts=parts)
+
+
+def _chat_limit_message(exc: UsageLimitExceeded, limits: ModelLimits) -> str:
+    detail = str(exc)
+    if "per_request_input_tokens_limit" not in detail and "request_limit" in detail:
+        return (
+            f"The turn exceeded the limit of {limits.max_model_requests} model "
+            f"requests. Raise {REQUEST_LIMIT_SETTING} to allow more."
+        )
+    return _input_limit_message(exc, limits)
 
 
 def _input_limit_message(exc: UsageLimitExceeded, limits: ModelLimits) -> str:

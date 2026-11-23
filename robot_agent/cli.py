@@ -9,6 +9,8 @@ from pydantic_ai.messages import ModelMessage
 
 from robot_agent import tools
 from robot_agent.agent import (
+    DEFAULT_MAX_MODEL_REQUESTS,
+    REQUEST_LIMIT_SETTING,
     AgentRequestError,
     ModelLimits,
     ModelReply,
@@ -96,6 +98,13 @@ _LIMIT_SPECS = (
         "an integer from 0 through 3",
     ),
     _LimitSpec("AGENT_SUMMARY_AFTER_TURNS", 0, 0, None, "a non-negative integer"),
+    _LimitSpec(
+        REQUEST_LIMIT_SETTING,
+        DEFAULT_MAX_MODEL_REQUESTS,
+        1,
+        None,
+        "a positive integer",
+    ),
 )
 
 _BUDGET_SPECS = (
@@ -196,6 +205,7 @@ def _request_limits() -> ModelLimits:
         max_output_tokens=values["AGENT_MAX_OUTPUT_TOKENS"],
         max_recalled_memories=values["AGENT_MAX_RECALLED_MEMORIES"],
         summary_after_turns=values["AGENT_SUMMARY_AFTER_TURNS"],
+        max_model_requests=values[REQUEST_LIMIT_SETTING],
     )
 
 

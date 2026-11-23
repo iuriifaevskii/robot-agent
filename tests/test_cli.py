@@ -44,6 +44,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> Path:
         "AGENT_MAX_HISTORY_TURNS",
         "AGENT_MAX_REQUEST_INPUT_TOKENS",
         "AGENT_MAX_OUTPUT_TOKENS",
+        "AGENT_MAX_MODEL_REQUESTS_PER_TURN",
         "AGENT_MAX_RECALLED_MEMORIES",
         "AGENT_SUMMARY_AFTER_TURNS",
         "AGENT_DAILY_MAX_REQUESTS",
