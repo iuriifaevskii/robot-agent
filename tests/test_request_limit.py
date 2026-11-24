@@ -72,12 +72,9 @@ def _failed_run(
 ) -> tuple[str, list[str]]:
     """Run one failing line. Return stderr and the prompts the model received."""
     calls = _replace_model(monkeypatch, _ModelScript(error=error))
-    _scripted_input(monkeypatch, ["hello", "again"], after="error")
+    _scripted_input(monkeypatch, ["hello"])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     captured = capsys.readouterr()
     assert captured.out == ""
     return captured.err, [call.prompt for call in calls]
@@ -173,10 +170,9 @@ def test_the_input_token_limit_keeps_its_own_message(
     calls = _replace_model(
         monkeypatch, _ModelScript(replies=["unused"], token_counts=[101])
     )
-    _scripted_input(monkeypatch, ["hello"], after="error")
+    _scripted_input(monkeypatch, ["hello"])
 
-    with pytest.raises(SystemExit):
-        cli.main()
+    cli.main()
 
     assert capsys.readouterr().err == (
         "Agent request failed: The request exceeds the input token limit of 100.\n"

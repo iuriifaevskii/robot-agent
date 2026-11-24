@@ -271,8 +271,7 @@ def test_non_text_chat_reply_is_rejected_but_its_usage_is_counted(
     _replace_model(monkeypatch, _ModelScript(replies=replies, usages=[_usage(1, 8, 2)]))
     _scripted_input(monkeypatch, ["hello", "/exit"])
 
-    with pytest.raises(SystemExit):
-        cli.main()
+    cli.main()
 
     assert "The model returned a non-text response." in capsys.readouterr().err
     assert _rows(database) == [(TODAY, 1, 8, 2)]
@@ -289,8 +288,7 @@ def test_a_failed_run_adds_nothing(
     _replace_model(monkeypatch, _ModelScript(error=AgentRunError("boom")))
     _scripted_input(monkeypatch, ["hello", "/exit"])
 
-    with pytest.raises(SystemExit):
-        cli.main()
+    cli.main()
 
     assert "Agent request failed: boom" in capsys.readouterr().err
     assert _rows(database) == [(TODAY, 1, 5, 0)]

@@ -61,7 +61,7 @@ class _Sent:
 class _Backend:
     """Records main and summarizer requests and scripts summarizer outcomes."""
 
-    outcomes: list[str | Exception] = field(default_factory=list)
+    outcomes: list[str | BaseException] = field(default_factory=list)
     main: list[_Sent] = field(default_factory=list)
     summarizer: list[_Sent] = field(default_factory=list)
     usages: list[RunUsage] = field(default_factory=list)
@@ -80,14 +80,14 @@ class _Backend:
         if not self.outcomes:
             raise AssertionError("unexpected summarizer request")
         outcome = self.outcomes.pop(0)
-        if isinstance(outcome, Exception):
+        if isinstance(outcome, BaseException):
             raise outcome
         return _Result(outcome, [], [], usage)
 
 
 def _install(
     monkeypatch: pytest.MonkeyPatch,
-    outcomes: list[str | Exception] | None = None,
+    outcomes: list[str | BaseException] | None = None,
     usages: list[RunUsage] | None = None,
 ) -> _Backend:
     backend = _Backend(list(outcomes or []), usages=list(usages or []))

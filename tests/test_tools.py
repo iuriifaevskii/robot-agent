@@ -293,7 +293,7 @@ def test_blank_exit_and_eof_do_not_call_the_model_or_tool(
     assert captured.err == ""
 
 
-def test_clock_failure_after_a_reply_exits_without_retry(
+def test_clock_failure_after_a_reply_keeps_the_chat_open_without_retry(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -324,10 +324,7 @@ def test_clock_failure_after_a_reply_exits_without_retry(
     _use_model(monkeypatch, _LocalFunctionModel(respond))
     _scripted_input(monkeypatch, ["hello", TIME_PROMPT])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     assert clock_calls[0] == 1
     assert len(seen) == 2
     assert not _has_tool_return(seen[1])
