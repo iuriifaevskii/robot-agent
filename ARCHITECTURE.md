@@ -47,7 +47,7 @@ robot_agent/
   sessions.py   create, list and resume sessions for a user_id
   memory.py     explicit user memories
   context.py    pure selection of summary, recent turns and relevant facts
-  usage.py      pure daily budget decisions and messages
+  usage.py      pure daily and session budget decisions and messages
 tests/          one test module per module or feature
 ```
 
@@ -69,10 +69,12 @@ Split a module into a subpackage only when it no longer fits one clear responsib
 A snapshot as of PR #44, for the places where the code differs from the intent
 below. See [ROADMAP.md](ROADMAP.md) for per-step status.
 
-- Storage has `users`, `sessions`, `messages`, `summaries`, `memories`, `active_sessions`
-  and `daily_usage`. `active_sessions` stores each user's selected session (set by
-  `/new` and `/resume`) so a restart reopens it. `daily_usage` holds device-wide daily counters only; session or user
-  usage is not stored. No face reference table exists.
+- Storage has `users`, `sessions`, `messages`, `summaries`, `memories`, `active_sessions`,
+  `daily_usage` and `session_usage`. `active_sessions` stores each user's selected
+  session (set by `/new` and `/resume`) so a restart reopens it. `daily_usage` holds
+  device-wide daily counters; `session_usage` holds one row of counters per session,
+  read and written only for a session the current user owns. Per-user usage is not
+  stored. No face reference table exists.
 - Memories keep a `source` column for provenance. Summaries keep `covered_through`
   as their coverage position.
 - Summaries are opt-in and triggered by a turn count (`AGENT_SUMMARY_AFTER_TURNS`),

@@ -66,9 +66,9 @@ step is a candidate for a separate future issue; split a step if necessary.
 12. Persistent usage limits: session and daily request/token budgets, tool-call rounds,
     and summary/speech/vision costs. Persist counters so restarting or opening a new
     session does not reset the daily limit. Per-turn input/output limits are step 6.
-    Status: partly done. Opt-in daily request/token budget, persisted in SQLite and
-    counting chat and summary requests (#39). A cap on model requests per chat turn
-    (#43); `tool_calls_limit` is not used. Not done: session-level budgets.
+    Status: done. Opt-in daily (#39) and per-session (#49) request/token budgets,
+    persisted in SQLite and counting chat and summary requests. A cap on model
+    requests per chat turn (#43); `tool_calls_limit` is not used.
     Speech and vision costs belong to their stages.
 13. Route supported deterministic commands locally, without asking the model to
     decide every time. Include date/time and session commands; reuse these operations

@@ -1,4 +1,4 @@
-"""SQLite storage for users, sessions, turns, summaries, memories, and daily usage.
+"""SQLite storage for users, sessions, turns, summaries, memories, and usage.
 
 SQL stays in this module. It does not read the environment, print, or call
 the model.
@@ -29,6 +29,8 @@ SUMMARY_READ_FAILED = "Could not read the session summary."
 SUMMARY_SAVE_FAILED = "Could not save the session summary."
 USAGE_READ_FAILED = "Could not read the daily usage."
 USAGE_SAVE_FAILED = "Could not save the daily usage."
+SESSION_USAGE_READ_FAILED = "Could not read the session usage."
+SESSION_USAGE_SAVE_FAILED = "Could not save the session usage."
 CLI_MEMORY_SOURCE = "cli"
 
 _SCHEMA = """
@@ -77,6 +79,13 @@ CREATE INDEX IF NOT EXISTS memories_by_user ON memories (user_id);
 
 CREATE TABLE IF NOT EXISTS daily_usage (
     day TEXT PRIMARY KEY,
+    requests INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_usage (
+    session_id TEXT PRIMARY KEY REFERENCES sessions (session_id),
     requests INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL
@@ -364,6 +373,59 @@ class ConversationStore:
                 )
         except sqlite3.Error as exc:
             raise StorageError(USAGE_SAVE_FAILED) from exc
+
+    def session_usage(self, user_id: str, session_id: str) -> tuple[int, int, int]:
+        """Return (requests, input_tokens, output_tokens) for one session.
+
+        The session must belong to user_id. A session with no row reports zeros.
+        """
+        try:
+            self._require_owner(user_id, session_id)
+            row = self._connection.execute(
+                """
+                SELECT requests, input_tokens, output_tokens
+                FROM session_usage
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(SESSION_USAGE_READ_FAILED) from exc
+        if row is None:
+            return 0, 0, 0
+        return int(row[0]), int(row[1]), int(row[2])
+
+    def add_session_usage(
+        self,
+        user_id: str,
+        session_id: str,
+        requests: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Add to a session's counters in one transaction.
+
+        The session must belong to user_id. The increment happens in SQL, so
+        no read-modify-write is needed.
+        """
+        try:
+            with self._connection:
+                self._require_owner(user_id, session_id)
+                self._connection.execute(
+                    """
+                    INSERT INTO session_usage (
+                        session_id, requests, input_tokens, output_tokens
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        requests = requests + excluded.requests,
+                        input_tokens = input_tokens + excluded.input_tokens,
+                        output_tokens = output_tokens + excluded.output_tokens
+                    """,
+                    (session_id, requests, input_tokens, output_tokens),
+                )
+        except sqlite3.Error as exc:
+            raise StorageError(SESSION_USAGE_SAVE_FAILED) from exc
 
     def save_memory(self, user_id: str, display_name: str, text: str) -> str:
         """Insert one fact for user_id and return its new id.
