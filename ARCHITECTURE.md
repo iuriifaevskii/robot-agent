@@ -38,30 +38,52 @@ is installed as a distribution on the Pi.
 ```text
 robot_agent/
   __main__.py   entry point, calls cli.main()
-  cli.py        terminal input/output and configuration checks
+  cli.py        terminal input/output, configuration checks, turn handling
+                and the local commands
   agent.py      PydanticAI agent and model calls
   identity.py   resolves the current user profile
-tests/          one test module per application module
+  tools.py      allowed agent tools (current date and time)
+  storage.py    the only module that runs SQL
+  sessions.py   create, list and resume sessions for a user_id
+  memory.py     explicit user memories
+  context.py    pure selection of summary, recent turns and relevant facts
+  usage.py      pure daily budget decisions and messages
+tests/          one test module per module or feature
 ```
 
-Planned modules, created only with the roadmap step that needs them:
+Planned modules not created yet. Create each only with the roadmap step that needs it:
 
-| Module | Responsibility | Roadmap step |
+| Module | Responsibility | Why it does not exist yet |
 | --- | --- | --- |
-| `chat.py` | Conversation turns for the current user and session | Terminal chat, history |
-| `tools.py` | Allowed agent tools bound to trusted context | Date/time tool |
-| `storage.py` | The only module that runs SQL | SQLite persistence |
-| `sessions.py` | Create, list and resume sessions for a `user_id` | Session commands |
-| `memory.py` | Explicit user memories | Persistent memory |
-| `context.py` | Summary, recent turns and memories within limits | Bounded context |
-| `usage.py` | API usage counters and limits | Usage limits |
-| `commands.py` | Local command dispatcher | Local routing |
-| `config.py` | Typed settings loaded from the environment | When `cli.py` outgrows inline checks |
+| `chat.py` | Conversation turns for the current user and session | Turn handling is still in `cli.py` |
+| `commands.py` | Local command dispatcher | `/time`, session and memory commands live in `cli.py`; extract a shared dispatcher when voice needs them (#41) |
+| `config.py` | Typed settings loaded from the environment | Configuration checks are still inline in `cli.py` |
 
 Dependency direction: `cli` (and later voice/screen adapters) calls conversation
 operations; those call `agent`, `memory`, `sessions` and `storage`. Lower modules never
 import `cli` or print. Only `cli` reads the environment and talks to the terminal.
 Split a module into a subpackage only when it no longer fits one clear responsibility.
+
+## Current implementation notes
+
+A snapshot as of PR #44, for the places where the code differs from the intent
+below. See [ROADMAP.md](ROADMAP.md) for per-step status.
+
+- Storage has `users`, `sessions`, `messages`, `summaries`, `memories`, `active_sessions`
+  and `daily_usage`. `active_sessions` stores each user's selected session (set by
+  `/new` and `/resume`) so a restart reopens it. `daily_usage` holds device-wide daily counters only; session or user
+  usage is not stored. No face reference table exists.
+- Memories keep a `source` column for provenance. Summaries keep `covered_through`
+  as their coverage position.
+- Summaries are opt-in and triggered by a turn count (`AGENT_SUMMARY_AFTER_TURNS`),
+  not by a token threshold. There is no summary at the end of a session.
+- The model request cap per turn bounds tool-call rounds indirectly; `tool_calls_limit`
+  is not used.
+- Local commands (`/time`, session and memory commands) run in `cli.py` before any
+  model request. Natural-language time questions still go to the model and its tool.
+- Failure handling: a failed summary is skipped with a warning. A failed chat request
+  prints an error and ends the process, and no turn is saved. Interrupts are not
+  handled yet.
 
 ## Identity and ownership
 
