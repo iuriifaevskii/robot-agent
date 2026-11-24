@@ -43,13 +43,18 @@ from robot_agent.sessions import (
 from robot_agent.storage import ConversationStore, StorageError, connect
 from robot_agent.usage import (
     MAX_REQUESTS_SETTING,
+    MAX_SESSION_REQUESTS_SETTING,
+    MAX_SESSION_TOKENS_SETTING,
     MAX_TOKENS_SETTING,
     NO_BUDGET,
+    NO_SESSION_BUDGET,
     UNTRUSTED_MESSAGE,
     DailyBudget,
+    SessionBudget,
     UsageCounts,
     blocking_limit,
     refusal_message,
+    session_refusal_message,
 )
 
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_MODEL")
@@ -113,6 +118,11 @@ _BUDGET_SPECS = (
     _LimitSpec(MAX_TOKENS_SETTING, 0, 0, None, "a non-negative integer"),
 )
 
+_SESSION_BUDGET_SPECS = (
+    _LimitSpec(MAX_SESSION_REQUESTS_SETTING, 0, 0, None, "a non-negative integer"),
+    _LimitSpec(MAX_SESSION_TOKENS_SETTING, 0, 0, None, "a non-negative integer"),
+)
+
 
 class _SummaryState(NamedTuple):
     """The stored summary text, its covered turn position and the saved turns."""
@@ -133,6 +143,7 @@ class ActiveChat:
     store: ConversationStore
     summary_failed: bool = False
     budget: DailyBudget = NO_BUDGET
+    session_budget: SessionBudget = NO_SESSION_BUDGET
     usage_untrusted: bool = False
 
 
@@ -141,9 +152,10 @@ def main() -> None:
     _require_env()
     limits = _request_limits()
     budget = _daily_budget()
+    session_budget = _session_budget()
     profile = resolve_user()
     try:
-        chat = _open_chat(profile, limits.max_history_turns, budget)
+        chat = _open_chat(profile, limits.max_history_turns, budget, session_budget)
     except StorageError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
@@ -172,6 +184,7 @@ def _open_chat(
     profile: UserProfile,
     history_limit: int,
     budget: DailyBudget = NO_BUDGET,
+    session_budget: SessionBudget = NO_SESSION_BUDGET,
 ) -> ActiveChat:
     store = connect(_database_path())
     session_id = open_session(store, profile.user_id, profile.display_name)
@@ -183,6 +196,7 @@ def _open_chat(
         history,
         store,
         budget=budget,
+        session_budget=session_budget,
     )
 
 
@@ -214,6 +228,11 @@ def _request_limits() -> ModelLimits:
 def _daily_budget() -> DailyBudget:
     max_requests, max_tokens = (_parse_limit(spec) for spec in _BUDGET_SPECS)
     return DailyBudget(max_requests, max_tokens)
+
+
+def _session_budget() -> SessionBudget:
+    max_requests, max_tokens = (_parse_limit(spec) for spec in _SESSION_BUDGET_SPECS)
+    return SessionBudget(max_requests, max_tokens)
 
 
 def _parse_limit(spec: _LimitSpec) -> int:
@@ -297,9 +316,9 @@ def _paid_turn(
     limits: ModelLimits,
     chat: ActiveChat,
 ) -> None:
-    """Send an ordinary line to the model unless the daily budget is reached.
+    """Send an ordinary line to the model unless a usage budget is reached.
 
-    The budget is checked before the summarizer and again before the chat
+    The budgets are checked before the summarizer and again before the chat
     request. A refused, failed or interrupted line saves nothing and is not
     retried.
     """
@@ -698,14 +717,21 @@ def _today() -> str:
 def _budget_open(chat: ActiveChat) -> bool:
     """Return whether a paid request may be sent. Print the reason when not.
 
-    With no limit enabled nothing is read. If today's counters cannot be
-    determined, or an earlier recording failed, no request is sent.
+    With no limit enabled nothing is read. The daily budget is checked first,
+    then the session budget. If a counter cannot be determined, or an earlier
+    recording failed, no request is sent.
     """
-    if not chat.budget.enabled:
+    if not (chat.budget.enabled or chat.session_budget.enabled):
         return True
     if chat.usage_untrusted:
         print(UNTRUSTED_MESSAGE, file=sys.stderr)
         return False
+    return _daily_open(chat) and _session_open(chat)
+
+
+def _daily_open(chat: ActiveChat) -> bool:
+    if not chat.budget.enabled:
+        return True
     try:
         used = UsageCounts(*chat.store.daily_usage(_today()))
     except (StorageError, tools.ClockReadError) as exc:
@@ -718,12 +744,42 @@ def _budget_open(chat: ActiveChat) -> bool:
     return False
 
 
+def _session_open(chat: ActiveChat) -> bool:
+    if not chat.session_budget.enabled:
+        return True
+    try:
+        used = UsageCounts(*chat.store.session_usage(chat.user_id, chat.session_id))
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return False
+    limit = blocking_limit(used, chat.session_budget)
+    if limit is None:
+        return True
+    print(session_refusal_message(limit, used, chat.session_budget), file=sys.stderr)
+    return False
+
+
 def _record_usage(chat: ActiveChat, usage: UsageCounts | None) -> None:
-    """Add a completed run's reported usage to today's counters."""
-    if usage is None or not chat.budget.enabled:
+    """Add a completed run's reported usage to each enabled set of counters."""
+    if usage is None:
         return
+    if chat.budget.enabled:
+        _record_daily(chat, usage)
+    if chat.session_budget.enabled:
+        _record_session(chat, usage)
+
+
+def _record_daily(chat: ActiveChat, usage: UsageCounts) -> None:
     try:
         chat.store.add_daily_usage(_today(), *usage)
     except (StorageError, tools.ClockReadError) as exc:
         chat.usage_untrusted = True
         print(f"Warning: daily usage was not recorded. {exc}", file=sys.stderr)
+
+
+def _record_session(chat: ActiveChat, usage: UsageCounts) -> None:
+    try:
+        chat.store.add_session_usage(chat.user_id, chat.session_id, *usage)
+    except StorageError as exc:
+        chat.usage_untrusted = True
+        print(f"Warning: session usage was not recorded. {exc}", file=sys.stderr)

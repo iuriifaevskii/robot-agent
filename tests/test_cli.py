@@ -49,6 +49,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> Path:
         "AGENT_SUMMARY_AFTER_TURNS",
         "AGENT_DAILY_MAX_REQUESTS",
         "AGENT_DAILY_MAX_TOKENS",
+        "AGENT_SESSION_MAX_REQUESTS",
+        "AGENT_SESSION_MAX_TOKENS",
         "AGENT_DB_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
