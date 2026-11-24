@@ -31,6 +31,8 @@ USAGE_READ_FAILED = "Could not read the daily usage."
 USAGE_SAVE_FAILED = "Could not save the daily usage."
 SESSION_USAGE_READ_FAILED = "Could not read the session usage."
 SESSION_USAGE_SAVE_FAILED = "Could not save the session usage."
+USER_CREATE_FAILED = "Could not create the profile."
+USER_READ_FAILED = "Could not read the profiles."
 CLI_MEMORY_SOURCE = "cli"
 
 _SCHEMA = """
@@ -121,6 +123,45 @@ class ConversationStore:
             return self._oldest_session(user_id, display_name)
         except sqlite3.Error as exc:
             raise StorageError(f"{OPEN_FAILED}.") from exc
+
+    def create_user(self, display_name: str) -> str:
+        """Insert one user with a new generated id and return that id.
+
+        No session is created and no selection is saved.
+        """
+        user_id = str(uuid4())
+        try:
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO users (user_id, display_name) VALUES (?, ?)",
+                    (user_id, display_name),
+                )
+        except sqlite3.Error as exc:
+            raise StorageError(USER_CREATE_FAILED) from exc
+        return user_id
+
+    def list_users(self) -> list[tuple[str, str]]:
+        """Return (user_id, display_name) for every user, oldest first."""
+        try:
+            rows = self._connection.execute(
+                "SELECT user_id, display_name FROM users ORDER BY rowid"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise StorageError(USER_READ_FAILED) from exc
+        return [(str(row["user_id"]), str(row["display_name"])) for row in rows]
+
+    def user_display_name(self, user_id: str) -> str | None:
+        """Return the stored display name, or None when the user is unknown."""
+        try:
+            row = self._connection.execute(
+                "SELECT display_name FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise StorageError(USER_READ_FAILED) from exc
+        if row is None:
+            return None
+        return str(row["display_name"])
 
     def active_session_id(self, user_id: str) -> str | None:
         """Return the saved active session, or None when no selection exists."""

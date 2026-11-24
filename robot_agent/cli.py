@@ -25,7 +25,14 @@ from robot_agent.context import (
     summary_span,
     summary_transcript,
 )
-from robot_agent.identity import UserProfile, resolve_user
+from robot_agent.identity import (
+    InvalidDisplayName,
+    UserProfile,
+    create_profile,
+    find_profile,
+    list_profiles,
+    resolve_user,
+)
 from robot_agent.memory import (
     MemoryRecord,
     delete_memory,
@@ -74,6 +81,10 @@ MEMORY_USAGE = (
     "Usage: /memory save <text> | list | search <query> | "
     "update <id> <text> | delete <id>"
 )
+USER_COMMAND = "/user"
+USER_USAGE = "Usage: /user create <display name> | list | use <user_id>"
+USER_CREATE_USAGE = "Usage: /user create <display name>"
+USER_UNAVAILABLE = "That user is not available."
 NO_MEMORIES = "No saved facts."
 NO_MEMORY_MATCHES = "No matching facts."
 
@@ -165,9 +176,10 @@ def main() -> None:
 def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
     """Read lines until /exit or end of input.
 
-    Session, memory and /time commands run locally. Each successful model turn
-    is stored before its reply is printed. A failed or interrupted model request
-    saves nothing and returns to the prompt. Ctrl+C at the prompt ends the chat.
+    Session, memory, user profile and /time commands run locally. Each
+    successful model turn is stored before its reply is printed. A failed or
+    interrupted model request saves nothing and returns to the prompt. Ctrl+C
+    at the prompt ends the chat.
     At most limits.max_history_turns complete turns are sent next. Matching
     saved facts and a session summary may be attached to an ordinary request,
     and the stored turn keeps the original line.
@@ -306,6 +318,7 @@ def _local_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
     return (
         _session_command(text, limits, chat)
         or _memory_command(text, chat)
+        or _user_command(text, limits, chat)
         or _time_command(text)
     )
 
@@ -452,6 +465,90 @@ def _resume_session(
     chat.session_id = args[0]
     chat.history = history
     print(args[0])
+
+
+def _user_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
+    """Run a local profile command. Return whether the line was one.
+
+    Invalid forms print usage and change nothing. These commands do not call
+    the model, touch usage counters or record a turn.
+    """
+    if text.split(maxsplit=1)[0] != USER_COMMAND:
+        return False
+    _run_user(text[len(USER_COMMAND) :].strip(), limits, chat)
+    return True
+
+
+def _run_user(remainder: str, limits: ModelLimits, chat: ActiveChat) -> None:
+    if not remainder:
+        print(USER_USAGE, file=sys.stderr)
+        return
+    name, payload = _split_payload(remainder)
+    if name == "create":
+        _create_user(payload, chat)
+    elif name == "list":
+        _list_users(payload, chat)
+    elif name == "use":
+        _use_user(payload, limits, chat)
+    else:
+        print(USER_USAGE, file=sys.stderr)
+
+
+def _create_user(payload: str, chat: ActiveChat) -> None:
+    if not payload:
+        print(USER_CREATE_USAGE, file=sys.stderr)
+        return
+    try:
+        user_id = create_profile(chat.store, payload)
+    except (InvalidDisplayName, StorageError) as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    print(user_id)
+
+
+def _list_users(payload: str, chat: ActiveChat) -> None:
+    if payload:
+        print(USER_USAGE, file=sys.stderr)
+        return
+    try:
+        found = list_profiles(chat.store)
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    for profile in found:
+        marker = " (active)" if profile.user_id == chat.user_id else ""
+        print(f"{profile.user_id} {profile.display_name}{marker}")
+
+
+def _use_user(payload: str, limits: ModelLimits, chat: ActiveChat) -> None:
+    """Switch the chat to a stored profile and its own session and history.
+
+    The chat changes only after the target's session and history have loaded.
+    The previous user's data is not modified.
+    """
+    if len(payload.split()) != 1:
+        print(USER_USAGE, file=sys.stderr)
+        return
+    try:
+        target = find_profile(chat.store, payload)
+        if target is None:
+            print(USER_UNAVAILABLE, file=sys.stderr)
+            return
+        if target.user_id == chat.user_id:
+            print(target.user_id)
+            return
+        session_id = open_session(chat.store, target.user_id, target.display_name)
+        history = chat.store.load_recent(
+            target.user_id, session_id, limits.max_history_turns
+        )
+    except StorageError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+    chat.user_id = target.user_id
+    chat.display_name = target.display_name
+    chat.session_id = session_id
+    chat.history = history
+    print(target.user_id)
 
 
 def _session_line(session_id: str, created_at: str, chat: ActiveChat) -> str:
