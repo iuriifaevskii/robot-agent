@@ -81,8 +81,9 @@ step is a candidate for a separate future issue; split a step if necessary.
     Keep saved history if summarization fails; show clear errors without retry loops.
     Status: partly done. A failed summary is skipped with a warning and the chat
     continues (#37). A completed turn is saved in one SQLite transaction, so a failed
-    request leaves no partial turn. Not done: a failed chat request still ends the
-    process, and Ctrl+C is not handled.
+    request leaves no partial turn. A failed or interrupted chat request (including
+    Ctrl+C) prints a message and returns to the prompt without saving or retrying;
+    Ctrl+C at the prompt ends the chat (#45). Not done: recovering an unsaved line.
 
 **Done when:** a terminal conversation survives restart, sessions remain separate,
 explicit memories are available in later sessions for the same user, and each model

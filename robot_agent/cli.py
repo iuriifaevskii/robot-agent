@@ -59,6 +59,7 @@ NEW_COMMAND = "/new"
 SESSIONS_COMMAND = "/sessions"
 RESUME_COMMAND = "/resume"
 TIME_COMMAND = "/time"
+INTERRUPTED_MESSAGE = "Request interrupted. Nothing was saved for this line."
 NEW_USAGE = "Usage: /new"
 TIME_USAGE = "Usage: /time"
 SESSIONS_USAGE = "Usage: /sessions"
@@ -153,10 +154,11 @@ def run_chat(model_name: str, limits: ModelLimits, chat: ActiveChat) -> None:
     """Read lines until /exit or end of input.
 
     Session, memory and /time commands run locally. Each successful model turn
-    is stored before its reply is printed. At most limits.max_history_turns
-    complete turns are sent next. Matching saved facts and a session summary
-    may be attached to an ordinary request, and the stored turn keeps the
-    original line.
+    is stored before its reply is printed. A failed or interrupted model request
+    saves nothing and returns to the prompt. Ctrl+C at the prompt ends the chat.
+    At most limits.max_history_turns complete turns are sent next. Matching
+    saved facts and a session summary may be attached to an ordinary request,
+    and the stored turn keeps the original line.
     """
     while True:
         line = _read_line()
@@ -258,7 +260,7 @@ def _database_path() -> Path:
 def _read_line() -> str | None:
     try:
         return input()
-    except EOFError:
+    except (EOFError, KeyboardInterrupt):
         return None
 
 
@@ -298,20 +300,45 @@ def _paid_turn(
     """Send an ordinary line to the model unless the daily budget is reached.
 
     The budget is checked before the summarizer and again before the chat
-    request. A refused line saves nothing and is not retried.
+    request. A refused, failed or interrupted line saves nothing and is not
+    retried.
     """
     if not _budget_open(chat):
         return
-    summary, outgoing = _summary_context(model_name, limits, chat)
-    if not _budget_open(chat):
+    reply = _model_reply(model_name, text, limits, chat)
+    if reply is None:
         return
-    reply = _reply(
-        model_name, _recall_prompt(text, summary, limits, chat), outgoing, limits, chat
-    )
     _record_usage(chat, reply.usage)
     _save_turn(chat, reply.produced)
     chat.history = reply.history
     print(reply.text)
+
+
+def _model_reply(
+    model_name: str,
+    text: str,
+    limits: ModelLimits,
+    chat: ActiveChat,
+) -> ModelReply | None:
+    """Return the chat reply, or None when the line is refused, failed or interrupted.
+
+    Only the model requests are covered by the interrupt handler, not the
+    save of a completed turn.
+    """
+    try:
+        summary, outgoing = _summary_context(model_name, limits, chat)
+        if not _budget_open(chat):
+            return None
+        return _reply(
+            model_name,
+            _recall_prompt(text, summary, limits, chat),
+            outgoing,
+            limits,
+            chat,
+        )
+    except KeyboardInterrupt:
+        print(INTERRUPTED_MESSAGE, file=sys.stderr)
+        return None
 
 
 def _session_command(text: str, limits: ModelLimits, chat: ActiveChat) -> bool:
@@ -654,13 +681,14 @@ def _reply(
     history: list[ModelMessage],
     limits: ModelLimits,
     chat: ActiveChat,
-) -> ModelReply:
+) -> ModelReply | None:
+    """Return the reply, or None after printing why the request failed."""
     try:
         return request_reply(model_name, chat.user_id, prompt, history, limits)
     except AgentRequestError as exc:
         _record_usage(chat, exc.usage)
         print(f"Agent request failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+        return None
 
 
 def _today() -> str:

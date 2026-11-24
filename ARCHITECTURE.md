@@ -81,9 +81,11 @@ below. See [ROADMAP.md](ROADMAP.md) for per-step status.
   is not used.
 - Local commands (`/time`, session and memory commands) run in `cli.py` before any
   model request. Natural-language time questions still go to the model and its tool.
-- Failure handling: a failed summary is skipped with a warning. A failed chat request
-  prints an error and ends the process, and no turn is saved. Interrupts are not
-  handled yet.
+- Failure handling: a failed summary is skipped with a warning. A failed or
+  interrupted chat request (including Ctrl+C) prints a message, saves no turn and
+  returns to the prompt; nothing is retried. Ctrl+C at the prompt ends the chat. A
+  failure to save a completed turn, an unopenable database and invalid configuration
+  still end the process.
 
 ## Identity and ownership
 

@@ -140,7 +140,7 @@ def _next_history(
 @dataclass
 class _ModelScript:
     replies: list[str] = field(default_factory=list)
-    error: Exception | None = None
+    error: BaseException | None = None
     error_on_prompt: str | None = None
     histories: list[list[ModelMessage]] | None = None
     token_counts: list[int] = field(default_factory=list)
@@ -711,12 +711,9 @@ def test_oversized_request_is_rejected_before_generation(
             token_counts=[1, 101],
         ),
     )
-    _scripted_input(monkeypatch, ["hello", "again"], after="error")
+    _scripted_input(monkeypatch, ["hello", "again"])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     captured = capsys.readouterr()
     assert captured.out == "model reply\n"
     assert captured.err == (
@@ -839,12 +836,9 @@ def test_model_call_failure(
         monkeypatch,
         _ModelScript(error=AgentRunError("connection failed")),
     )
-    _scripted_input(monkeypatch, ["hello"], after="error")
+    _scripted_input(monkeypatch, ["hello"])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "Agent request failed: connection failed\n"
@@ -868,12 +862,9 @@ def test_model_failure_on_second_turn(
             error_on_prompt="again",
         ),
     )
-    _scripted_input(monkeypatch, ["hello", "again"], after="error")
+    _scripted_input(monkeypatch, ["hello", "again"])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     captured = capsys.readouterr()
     assert captured.out == "model reply\n"
     assert captured.err == "Agent request failed: connection failed\n"
@@ -1183,12 +1174,9 @@ def test_failed_turn_is_not_saved(
             error_on_prompt="again",
         ),
     )
-    _scripted_input(monkeypatch, ["hello", "again"], after="error")
+    _scripted_input(monkeypatch, ["hello", "again"])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     captured = capsys.readouterr()
     assert captured.out == "model reply\n"
     assert captured.err == stderr

@@ -397,12 +397,9 @@ def test_oversized_recalled_request_is_not_sent(
         monkeypatch,
         _ModelScript(replies=["nope"], token_counts=[11]),
     )
-    _scripted_input(monkeypatch, [_QUESTION], after="error")
+    _scripted_input(monkeypatch, [_QUESTION])
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-
-    assert exc.value.code == 1
+    cli.main()
     counted = calls.token_counts[0].prompt
     assert calls == []
     assert len(calls.token_counts) == 1
